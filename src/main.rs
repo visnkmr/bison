@@ -8,6 +8,7 @@ use anyhow::Result;
 use indexmap::IndexMap;
 use prost::Message;
 use serde::Serialize;
+use ndarray_npy::NpzReader;
 use std::{
     collections::{HashMap, HashSet},
     fmt,
@@ -698,7 +699,7 @@ pub enum OrtError {
     IndexError(&'static str),
     #[error("Invalid model")]
     InvalidModel,
-    #[error("Missing input: {0}")]
+    #[error("Missing1 input: {0}")]
     MissingInput(String),
     #[error("Unsupported op: {0}")]
     UnsupportedOp(String),
@@ -794,7 +795,7 @@ impl ShapeInference {
             let input_shapes: Vec<Vec<Dimensions>> = node.input.iter()
                 .map(|name| self.shapes.get(name)
                     .cloned()
-                    .ok_or_else(|| OrtError::MissingInput(name.clone())))
+                    .ok_or_else(|| OrtError::MissingInput("from shape".to_string()+&name.clone())))
                 .collect::<OrtResult<Vec<_>>>()?;
 
             let output_shapes = self.infer_node_shapes(node, &input_shapes)?;
@@ -805,34 +806,221 @@ impl ShapeInference {
         Ok(())
     }
 
-    fn infer_node_shapes(&self, node: &NodeProto, input_shapes: &[Vec<Dimensions>]) -> OrtResult<Vec<Vec<Dimensions>>> {
-        match node.op_type.as_str() {
-            
-            "Add" | "Sub" | "Mul" | "Div" => {
-                if input_shapes[0] != input_shapes[1] {
-                    return Err(OrtError::TypeMismatch("Input shapes must match"));
-                }
-                Ok(vec![input_shapes[0].clone()])
-            }
-            "MatMul" => {
-                let shape1 = &input_shapes[0];
-                let shape2 = &input_shapes[1];
-                let ndim1 = shape1.len();
-                let ndim2 = shape2.len();
-                if ndim1 < 2 || ndim2 < 2 {
-                    return Err(OrtError::InvalidTensorData("MatMul requires 2D or higher tensors".into()));
-                }
-                let m = shape1[ndim1 - 2].clone();
-                let n = shape2[ndim2 - 1].clone();
-                let mut out_shape = shape1[..ndim1 - 2].to_vec();
-                out_shape.push(m);
-                out_shape.push(n);
-                Ok(vec![out_shape])
-            }
-            // Add shape inference for other operators (e.g., Softmax, LayerNormalization)
-            _ => Err(OrtError::UnsupportedOp(format!("Shape inference not implemented for {}", node.op_type))),
+   fn infer_node_shapes(&self, node: &NodeProto, input_shapes: &[Vec<Dimensions>]) -> OrtResult<Vec<Vec<Dimensions>>> {
+    match node.op_type.as_str() {
+        "Shape" => {
+            // Shape op returns the shape of the input tensor as a 1D tensor
+            // Output shape: [rank of input]
+            let rank = input_shapes[0].len();
+            Ok(vec![vec![Dimensions::Fixed(rank)]])
         }
+        "Add" | "Sub" | "Mul" | "Div" => {
+            // Element-wise operations require matching shapes
+            if input_shapes[0] != input_shapes[1] {
+                return Err(OrtError::TypeMismatch(&(""
+                    // "Input shapes must match for {}: got {:?} and {:?}", 
+                    // node.op_type, input_shapes[0], input_shapes[1]
+                )));
+            }
+            Ok(vec![input_shapes[0].clone()])
+        }
+        "MatMul" => {
+            // Matrix multiplication: [..., m, k] @ [..., k, n] -> [..., m, n]
+            let shape1 = &input_shapes[0];
+            let shape2 = &input_shapes[1];
+            let ndim1 = shape1.len();
+            let ndim2 = shape2.len();
+            if ndim1 < 1 || ndim2 < 1 {
+                return Err(OrtError::InvalidTensorData(format!(
+                    "MatMul requires at least 1D tensors for {}", node.name
+                )));
+            }
+            let m = shape1[ndim1 - 2].clone(); // Rows of first matrix
+            let n = shape2[ndim2 - 1].clone(); // Columns of second matrix
+            // Check compatibility: shape1[..., k] and shape2[..., k]
+            if ndim1 > 1 && ndim2 > 1 && shape1[ndim1 - 1] != shape2[ndim2 - 2] {
+                return Err(OrtError::TypeMismatch(&(""
+                    // "MatMul inner dimensions mismatch: {} vs {}", 
+                    // shape1[ndim1 - 1], shape2[ndim2 - 2]
+                )));
+            }
+            let mut out_shape = shape1[..ndim1 - 2].to_vec();
+            out_shape.push(m);
+            out_shape.push(n);
+            Ok(vec![out_shape])
+        }
+        "Gather" => {
+            // Gather: Select elements from data tensor using indices
+            // Inputs: data [d0, d1, ..., dn], indices [i0, i1, ..., im]
+            // Attribute: axis (default 0)
+            // Output shape: [d0, ..., d(axis-1), i0, i1, ..., im, d(axis+1), ..., dn]
+            let data_shape = &input_shapes[0];
+            let indices_shape = &input_shapes[1];
+            let axis = node.attributes.iter()
+                .find(|attr| attr.name == "axis")
+                .and_then(|attr| Some(attr.i))
+                .unwrap_or(0) as usize;
+            if axis >= data_shape.len() {
+                return Err(OrtError::InvalidTensorData(format!(
+                    "Gather axis {} out of bounds for data shape {:?}", axis, data_shape
+                )));
+            }
+            let mut output_shape = Vec::new();
+            // Copy dimensions before axis
+            for i in 0..axis {
+                output_shape.push(data_shape[i].clone());
+            }
+            // Append indices shape
+            for dim in indices_shape {
+                output_shape.push(dim.clone());
+            }
+            // Copy dimensions after axis
+            for i in (axis + 1)..data_shape.len() {
+                output_shape.push(data_shape[i].clone());
+            }
+            Ok(vec![output_shape])
+        }
+        "Softmax" => {
+            // Softmax: Normalizes along the specified axis (default: last dimension)
+            // Output shape is the same as input shape
+            let axis = node.attributes.iter()
+                .find(|attr| attr.name == "axis")
+                .and_then(|attr| Some(attr.i))
+                .unwrap_or(-1) as i64;
+            let input_shape = &input_shapes[0];
+            let axis = if axis >= 0 { axis as usize } else { input_shape.len() - (-axis as usize) };
+            if axis >= input_shape.len() {
+                return Err(OrtError::InvalidTensorData(format!(
+                    "Softmax axis {} out of bounds for shape {:?}", axis, input_shape
+                )));
+            }
+            Ok(vec![input_shape.clone()])
+        }
+        "LayerNormalization" => {
+            // LayerNormalization: Normalizes over the last dimension
+            // Inputs: X, scale, bias (scale and bias may have shape matching last dimension)
+            // Output shape is the same as input X shape
+            let input_shape = &input_shapes[0];
+            // Optional: Validate scale and bias shapes if needed
+            Ok(vec![input_shape.clone()])
+        }
+        "Relu" => {
+            // Relu: Element-wise activation, preserves input shape
+            Ok(vec![input_shapes[0].clone()])
+        }
+        "Transpose" => {
+            // Transpose: Permutes dimensions according to perm attribute
+            let input_shape = &input_shapes[0];
+            let perm = node.attributes.iter()
+                .find(|attr| attr.name == "perm")
+                .and_then(|attr| Some(attr.ints.clone()))
+                .ok_or_else(|| OrtError::InvalidTensorData(format!(
+                    "Transpose node {} missing perm attribute", node.name
+                )))?;
+            if perm.len() != input_shape.len() {
+                return Err(OrtError::InvalidTensorData(format!(
+                    "Transpose perm length {} does not match input shape {:?}", 
+                    perm.len(), input_shape
+                )));
+            }
+            let mut output_shape = vec![Dimensions::Fixed(0); input_shape.len()];
+            for (i, &p) in perm.iter().enumerate() {
+                output_shape[i] = input_shape[p as usize].clone();
+            }
+            Ok(vec![output_shape])
+        }
+        "Reshape" => {
+            // Reshape: Reshapes input tensor according to shape input
+            // Inputs: data, shape (shape is a 1D tensor of integers)
+            let data_shape = &input_shapes[0];
+            let shape_tensor = &input_shapes[1];
+            // For simplicity, assume shape input is provided at inference time
+            // In a full implementation, you may need to evaluate the shape tensor
+            // Here, we assume the shape tensor’s values are known or symbolic
+            let mut output_shape = shape_tensor.clone();
+            // Handle -1 (infer dimension) or 0 (copy from input)
+            let mut product = 1;
+            let mut inferred_dim = None;
+            for (i, dim) in output_shape.iter_mut().enumerate() {
+                if let Dimensions::Fixed(d) = dim {
+                    if *d == 0 {
+                        *dim = data_shape[i].clone();
+                    } else if *d == usize::MAX {
+                        if inferred_dim.is_some() {
+                            return Err(OrtError::InvalidTensorData(
+                                "Reshape allows only one -1 dimension".into()
+                            ));
+                        }
+                        inferred_dim = Some(i);
+                    }
+                    if let Dimensions::Fixed(d) = dim {
+                        product *= *d as i64;
+                    }
+                }
+            }
+            if let Some(inferred_idx) = inferred_dim {
+                let input_product: i64 = data_shape.iter()
+                    .filter_map(|d| if let Dimensions::Fixed(d) = d { Some(*d as i64) } else { None })
+                    .product();
+                if product == 0 {
+                    return Err(OrtError::InvalidTensorData(
+                        "Reshape product of fixed dimensions is zero".into()
+                    ));
+                }
+                output_shape[inferred_idx] = Dimensions::Fixed((input_product / product) as usize);
+            }
+            Ok(vec![output_shape])
+        }
+        "Cast" => {
+            // Cast: Changes data type but preserves shape
+            Ok(vec![input_shapes[0].clone()])
+        }
+        "Concat" => {
+            // Concat: Concatenates tensors along a specified axis
+            let axis = node.attributes.iter()
+                .find(|attr| attr.name == "axis")
+                .and_then(|attr| Some(attr.i))
+                .ok_or_else(|| OrtError::InvalidTensorData(format!(
+                    "Concat node {} missing axis attribute", node.name
+                )))? as usize;
+            let mut output_shape = input_shapes[0].clone();
+            let mut concat_dim = 0;
+            for shape in input_shapes {
+                if shape.len() != output_shape.len() {
+                    return Err(OrtError::TypeMismatch(&(""
+                    // return Err(OrtError::TypeMismatch(&format!(
+                    //     "Concat input shapes must have same rank: {:?}", input_shapes
+                    )));
+                }
+                for (i, dim) in shape.iter().enumerate() {
+                    if i == axis {
+                        if let Dimensions::Fixed(d) = dim {
+                            concat_dim += d;
+                        } else {
+                            // Handle symbolic dimensions by keeping symbolic
+                            concat_dim = 0; // Reset to indicate symbolic
+                            break;
+                        }
+                    } else if shape[i] != output_shape[i] {
+                        return Err(OrtError::TypeMismatch(&(""
+                        // return Err(OrtError::TypeMismatch(&format!(""
+                            // "Concat non-axis dimensions must match: {:?}", input_shapes
+                        )));
+                    }
+                }
+            }
+            if concat_dim > 0 {
+                output_shape[axis] = Dimensions::Fixed(concat_dim);
+            }
+            Ok(vec![output_shape])
+        }
+        // Add more operators as needed
+        _ => Err(OrtError::UnsupportedOp(format!(
+            "Shape inference not implemented for {} in node {}", 
+            node.op_type, node.name
+        ))),
     }
+}
 }
 pub struct OrtEngine {
     model: ModelProto,
@@ -2351,7 +2539,7 @@ fn op_if(&self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let node_inputs = node
             .input
             .iter()
-            .map(|name| tensor_map.get(name).cloned().ok_or_else(|| OrtError::MissingInput(name.clone())))
+            .map(|name| tensor_map.get(name).cloned().ok_or_else(|| OrtError::MissingInput("from infer".to_string()+&name.clone())))
             .collect::<OrtResult<Vec<_>>>()?;
 
         let output = if let Some(op) = self.node_registry.get(&node.op_type) {
@@ -2430,7 +2618,7 @@ fn op_if(&self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     }
 }
 
-    pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
+pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
     let mut file = File::open(path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
@@ -2448,6 +2636,32 @@ fn op_if(&self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     let graph = model.graph.as_ref().ok_or(OrtError::InvalidModel)?;
     let mut core_ops = HashSet::new();
     let mut vendor_ops = HashSet::new();
+
+    // Print model inputs
+    println!("\nModel Inputs:");
+    for input in &graph.input {
+        let input_name = &input.name;
+        let type_info = input.type_proto.as_ref().map_or("Unknown".to_string(), |tp| {
+            if let Some(tensor_type) = &tp.tensor_type {
+                let dtype = DataType::try_from(tensor_type.elem_type)
+                    .map_or(format!("Unknown({})", tensor_type.elem_type), |dt| format!("{:?}", dt));
+                let shape = tensor_type.shape.as_ref().map_or("Unknown".to_string(), |shape_proto| {
+                    let dims: Vec<String> = shape_proto.dim.iter().map(|dim| {
+                        if dim.dim_value >= 0 {
+                            dim.dim_value.to_string()
+                        } else {
+                            "Symbolic".to_string()
+                        }
+                    }).collect();
+                    format!("[{}]", dims.join(", "))
+                });
+                format!("Type: {}, Shape: {}", dtype, shape)
+            } else {
+                "Unknown".to_string()
+            }
+        });
+        println!("  - {}: {}", input_name, type_info);
+    }
 
     println!("\nNodes with Input and Output Names:");
     for (i, node) in graph.node.iter().enumerate() {
@@ -2512,8 +2726,8 @@ fn parse_int64_data(proto: &TensorProto, count: usize) -> OrtResult<Vec<u8>> {
 }
 
 fn main() -> Result<()> {
-    //  OrtEngine::print_model_info("/root/github/Kokoros/checkpoints/kokoro-v1.0.onnx")?;
-    let engine = OrtEngine::new("/root/github/Kokoros/checkpoints/kokoro-v1.0.onnx")?;
+     OrtEngine::print_model_info("/root/github/Kokoros/checkpoints/kokoro-v1.0.onnx")?;
+    // let engine = OrtEngine::new("/root/github/Kokoros/checkpoints/kokoro-v1.0.onnx")?;
     // let input_data1: Vec<i64> = (0..128).collect();
     // let input_data2: Vec<i64> = (128..256).collect();
 
@@ -2541,60 +2755,166 @@ fn main() -> Result<()> {
     // ];
 // Create a tensor directly instead of a sequence
     // Example input data
-    let tokens: Vec<Vec<i64>> = vec![vec![0, 50, 156, 43, 102, 4, 0]]; // [1, 7]
-    let styles: Vec<Vec<f32>> = vec![vec![0.1, 0.2, 0.3, 0.4]]; // [1, 4] (adjust style_dim as needed)
-    let speed: f32 = 1.0;
+//     let tokens: Vec<Vec<i64>> = vec![vec![0, 50, 156, 43, 102, 4, 0]]; // [1, 7]
+//     let styles: Vec<Vec<f32>> = vec![vec![0.1, 0.2, 0.3, 0.4]]; // [1, 4] (adjust style_dim as needed)
+//     let speed: f32 = 1.0;
 
-    // Create tokens tensor
-    let batch_size = tokens.len();
-    let sequence_length = tokens[0].len();
-    let tokens_flat: Vec<i64> = tokens.into_iter().flatten().collect();
-    let tokens_tensor = OrtValue::Tensor {
-        shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(sequence_length)],
-        dtype: DataType::Int64,
-        data: Arc::new(
-            tokens_flat
-                .iter()
-                .flat_map(|x| x.to_le_bytes())
-                .collect::<Vec<u8>>(),
-        ),
-    };
+//     // Create tokens tensor
+//     let batch_size = tokens.len();
+//     let sequence_length = tokens[0].len();
+//     let tokens_flat: Vec<i64> = tokens.clone().into_iter().flatten().collect();
+//     let tokens_tensor = OrtValue::Tensor {
+//         shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(sequence_length)],
+//         dtype: DataType::Int64,
+//         data: Arc::new(
+//             tokens_flat
+//                 .iter()
+//                 .flat_map(|x| x.to_le_bytes())
+//                 .collect::<Vec<u8>>(),
+//         ),
+//     };
 
-    // Create style tensor
-    let style_dim = styles[0].len();
-    let style_flat: Vec<f32> = styles.into_iter().flatten().collect();
-    let style_tensor = OrtValue::Tensor {
-        shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(style_dim)],
-        dtype: DataType::Float,
-        data: Arc::new(
-            style_flat
-                .iter()
-                .flat_map(|x| x.to_le_bytes())
-                .collect::<Vec<u8>>(),
-        ),
-    };
+//     // Create style tensor
+//     let style_dim = styles[0].len();
+//     let style_flat: Vec<f32> = styles.into_iter().flatten().collect();
+//     let style_tensor = OrtValue::Tensor {
+//         shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(style_dim)],
+//         dtype: DataType::Float,
+//         data: Arc::new(
+//             style_flat
+//                 .iter()
+//                 .flat_map(|x| x.to_le_bytes())
+//                 .collect::<Vec<u8>>(),
+//         ),
+//     };
 
-    // Create speed tensor
-    let speed_tensor = OrtValue::Tensor {
-        shape: vec![Dimensions::Fixed(1)],
-        dtype: DataType::Float,
-        data: Arc::new(speed.to_le_bytes().to_vec()),
-    };
+//     // Create speed tensor
+//     let speed_tensor = OrtValue::Tensor {
+//         shape: vec![Dimensions::Fixed(1)],
+//         dtype: DataType::Float,
+//         data: Arc::new(speed.to_le_bytes().to_vec()),
+//     };
 
-    // Create input HashMap
-    let mut inputs = HashMap::new();
-    inputs.insert("tokens".to_string(), tokens_tensor);
-    inputs.insert("style".to_string(), style_tensor);
-    inputs.insert("speed".to_string(), speed_tensor);
-    let outputs = engine.infer(inputs)?;
-    match outputs.get("predictions") {
-        Some(OrtValue::Map(result_map)) => {
-            for (key, value) in result_map {
-                println!("Key: {:?}, Value: {:?}", key, value);
-            }
-        }
-        Some(_) => println!("Error: 'predictions' output is not a Map"),
-        None => println!("Error: 'predictions' output not found"),
-    }
+//     // Create input HashMap
+//     let mut inputs = HashMap::new();
+//     // fn load_voices(voices_path: &str) -> HashMap<String, Vec<[[f32; 256]; 1]>> {
+//         let mut npz = NpzReader::new(File::open("/root/github/Kokoros/data/voices-v1.0.bin").unwrap()).unwrap();
+//         let mut map = HashMap::new();
+
+//         for voice in npz.names().unwrap() {
+//             let voice_data: Result<Array3<f32>, _> = npz.by_name(&voice);
+//             let voice_data = voice_data.unwrap();
+//             let mut tensor = vec![[[0.0; 256]; 1]; 511];
+//             for (i, inner_value) in voice_data.outer_iter().enumerate() {
+//                 for (j, inner_inner_value) in inner_value.outer_iter().enumerate() {
+//                     for (k, number) in inner_inner_value.iter().enumerate() {
+//                         tensor[i][j][k] = *number;
+//                     }
+//                 }
+//             }
+//             map.insert(voice, tensor);
+//         }
+
+//         let sorted_voices = {
+//             let mut voices = map.keys().collect::<Vec<_>>();
+//             voices.sort();
+//             voices
+//         };
+
+//         eprintln!("voice styles loaded: {:?}", sorted_voices);
+//     // }
+// //     let vocab_size = 22; // Adjust based on model
+// // let embedding_dim = 500; // Adjust based on model
+// // let embedding_data: Vec<f32> = vec![0.0; vocab_size * embedding_dim]; // Dummy data
+// // let embedding_tensor = OrtValue::Tensor {
+// //     shape: vec![Dimensions::Fixed(vocab_size), Dimensions::Fixed(embedding_dim)],
+// //     dtype: DataType::Float,
+// //     data: Arc::new(
+// //         embedding_data
+// //             .iter()
+// //             .flat_map(|x| x.to_le_bytes())
+// //             .collect::<Vec<u8>>(),
+// //     ),
+// // };
+// // inputs.insert("encoder.bert.embeddings.word_embeddings.weight".to_string(), embedding_tensor);
+
+// // let vocab_size = 22; // Adjust based on model
+// // let embedding_dim = 500; // Adjust based on model
+// // let embedding_data: Vec<f32> = vec![0.0; vocab_size * embedding_dim]; // Dummy data
+// // let embedding_tensor = OrtValue::Tensor {
+// //     shape: vec![Dimensions::Fixed(vocab_size), Dimensions::Fixed(embedding_dim)],
+// //     dtype: DataType::Float,
+// //     data: Arc::new(
+// //         embedding_data
+// //             .iter()
+// //             .flat_map(|x| x.to_le_bytes())
+// //             .collect::<Vec<u8>>(),
+// //     ),
+// // };
+// // inputs.insert("encoder.text_encoder.embedding.weight".to_string(), embedding_tensor);
+// let styles: Vec<&str> = "af_sarah.4+af_nicole.6".split('+').collect();
+
+// let mut style_names = Vec::new();
+// let mut style_portions = Vec::new();
+
+// // Parse style names and portions
+// for style in styles {
+//     if let Some((name, portion)) = style.split_once('.') {
+//         if let Ok(portion) = portion.parse::<f32>() {
+//             style_names.push(name);
+//             style_portions.push(portion * 0.1); // Scale portion to 0.0-1.0 range
+//         }
+//     }
+// }
+// eprintln!("styles: {:?}, portions: {:?}", style_names, style_portions);
+
+// // Initialize blended_style as a 1x256 tensor
+// let mut blended_style = vec![vec![0.0; 256]; 1];
+
+// // Blend styles from the map
+// for (name, portion) in style_names.iter().zip(style_portions.iter()) {
+//     if let Some(style) = map.get(*name) {
+//         // Ensure tokens.len() is valid for indexing style
+//         if tokens.len() < style.len() {
+//             let style_slice = &style[tokens.len()][0]; // [256] array
+//             for j in 0..256 {
+//                 blended_style[0][j] += style_slice[j] * portion;
+//             }
+//         } else {
+//             eprintln!("Error: tokens.len()={} exceeds style dimension={}", tokens.len(), style.len());
+//         }
+//     } else {
+//         eprintln!("Error: style {} not found in map", name);
+//     }
+// }
+
+// // Convert blended_style to raw bytes for OrtValue::Tensor
+// let flat_data: Vec<f32> = blended_style.into_iter().flatten().collect();
+// let data_bytes: Vec<u8> = flat_data
+//     .into_iter()
+//     .flat_map(|x| x.to_le_bytes().to_vec())
+//     .collect();
+
+// // Create the OrtValue::Tensor with correct shape and data
+// inputs.insert(
+//     "style".to_string(),
+//     OrtValue::Tensor {
+//         shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(256)], // Shape [1, 256]
+//         dtype: DataType::Float,
+//         data: Arc::new(data_bytes),
+//     },
+// );
+// inputs.insert("tokens".to_string(), tokens_tensor);
+//     inputs.insert("speed".to_string(), speed_tensor);
+//     let outputs = engine.infer(inputs)?;
+//     match outputs.get("audio") {
+//         Some(OrtValue::Map(result_map)) => {
+//             for (key, value) in result_map {
+//                 println!("Key: {:?}, Value: {:?}", key, value);
+//             }
+//         }
+//         Some(_) => println!("Error: 'predictions' output is not a Map"),
+//         None => println!("Error: 'predictions' output not found"),
+//     }
     Ok(())
 }

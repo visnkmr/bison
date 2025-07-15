@@ -1,6 +1,9 @@
 // #![recursion_limit = "5684"]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+// Static counter for node indexing
+static NODE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 use anyhow::Result;
 use indexmap::IndexMap;
 use prost::Message;
@@ -14,8 +17,8 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
-use ndarray::{ArrayD, Axis, Array2, Array3};
-use num_traits::Float;
+use ndarray::{Array2, Array3, ArrayD, Axis, Dimension};
+use num_traits::{Float, ToBytes};
 
 // Simplified ONNX type definitions
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,7 +59,9 @@ pub struct AttributeProto {
     pub t: Option<TensorProto>,
     pub ints: Vec<i64>,
     pub floats: Vec<f32>,
+    pub g: Option<GraphProto>, // Added for subgraphs
 }
+
 
 #[derive(Debug, Clone, Default)]
 pub struct NodeProto {
@@ -64,6 +69,9 @@ pub struct NodeProto {
     pub output: Vec<String>,
     pub op_type: String,
     pub attributes: Vec<AttributeProto>,
+    pub name: String, // Added for tag 3
+    pub domain: String, // Added for tag 5
+    pub subgraphs: HashMap<String, GraphProto>, // Added for subgraphs
 }
 
 #[derive(Debug, Clone, Default)]
@@ -71,13 +79,37 @@ pub struct GraphProto {
     pub node: Vec<NodeProto>,
     pub initializer: Vec<TensorProto>,
     pub output: Vec<ValueInfoProto>,
+    pub name: String, // Added for tag 2
+    pub doc_string: String, // Added for tag 5
+    pub input: Vec<ValueInfoProto>, // Added for tag 12
+    pub value_info: Vec<ValueInfoProto>, // Added for tag 13
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ValueInfoProto {
     pub name: String,
+    pub type_proto: Option<TypeProto>, // Added for tag 2
+}
+// Minimal TypeProto for tensor type information
+#[derive(Debug, Clone, Default)]
+pub struct TypeProto {
+    pub tensor_type: Option<TensorTypeProto>,
+}
+#[derive(Debug, Clone, Default)]
+pub struct TensorTypeProto {
+    pub elem_type: i32, // Data type (e.g., 1 for float, 7 for int64)
+    pub shape: Option<TensorShapeProto>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct TensorShapeProto {
+    pub dim: Vec<TensorDimension>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TensorDimension {
+    pub dim_value: i64, // Specific dimension value (or 0 if symbolic)
+}
 #[derive(Debug, Clone, Default)]
 pub struct OpSetImport {
     pub domain: String,
@@ -89,8 +121,9 @@ pub struct ModelProto {
     pub ir_version: i64,
     pub opset_import: Vec<OpSetImport>,
     pub graph: Option<GraphProto>,
+    pub producer_name: String, // Added for tag 2
+    pub producer_version: String, // Added for tag 3
 }
-
 // Implement Message trait for OpSetImport
 impl Message for OpSetImport {
     fn encode_raw<B: prost::bytes::BufMut>(&self, _buf: &mut B) {
@@ -135,30 +168,46 @@ impl Message for TensorProto {
         ctx: prost::encoding::DecodeContext,
     ) -> Result<(), prost::DecodeError> {
         match tag {
-            1 => prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?,
-            2 => prost::encoding::int32::merge(wire_type, &mut self.data_type, buf, ctx)?,
-            4 => {
+            1 => {
                 let mut dim = 0i64;
                 prost::encoding::int64::merge(wire_type, &mut dim, buf, ctx)?;
                 self.dims.push(dim);
+                println!("TensorProto: Added dimension: {}", dim);
             }
-            5 => {
-                let mut f = 0.0f32;
-                prost::encoding::float::merge(wire_type, &mut f, buf, ctx)?;
-                self.float_data.push(f);
+            2 => {
+                prost::encoding::int32::merge(wire_type, &mut self.data_type, buf, ctx)?;
+                println!("TensorProto: Set data_type: {}", self.data_type);
             }
-            6 => {
-                let mut i = 0i64;
-                prost::encoding::int64::merge(wire_type, &mut i, buf, ctx)?;
-                self.int64_data.push(i);
+            4 => {
+                prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?;
+                println!("TensorProto: Set name: {}", self.name);
             }
             7 => {
-                let mut s = Vec::new();
-                prost::encoding::bytes::merge(wire_type, &mut s, buf, ctx)?;
-                self.string_data.push(s);
+                prost::encoding::bytes::merge(wire_type, &mut self.raw_data, buf, ctx)?;
+                println!("TensorProto: Added raw_data (length: {})", self.raw_data.len());
             }
-            8 => prost::encoding::bytes::merge(wire_type, &mut self.raw_data, buf, ctx)?,
-            _ => prost::encoding::skip_field(wire_type, tag, buf, ctx)?,
+            8 => {
+                let mut string_data = Vec::new();
+                prost::encoding::bytes::merge(wire_type, &mut string_data, buf, ctx)?;
+                self.string_data.push(string_data.clone());
+                println!("TensorProto: Added string_data: {:?}", String::from_utf8_lossy(&string_data));
+            }
+            9 => {
+                let mut float_data = 0f32;
+                prost::encoding::float::merge(wire_type, &mut float_data, buf, ctx)?;
+                self.float_data.push(float_data);
+                println!("TensorProto: Added float_data: {}", float_data);
+            }
+            11 => {
+                let mut int64_data = 0i64;
+                prost::encoding::int64::merge(wire_type, &mut int64_data, buf, ctx)?;
+                self.int64_data.push(int64_data);
+                println!("TensorProto: Added int64_data: {}", int64_data);
+            }
+            _ => {
+                println!("TensorProto: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
         }
         Ok(())
     }
@@ -186,8 +235,20 @@ impl Message for ValueInfoProto {
         ctx: prost::encoding::DecodeContext,
     ) -> Result<(), prost::DecodeError> {
         match tag {
-            1 => prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?,
-            _ => prost::encoding::skip_field(wire_type, tag, buf, ctx)?,
+            1 => {
+                prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?;
+                println!("ValueInfoProto: Set name: {}", self.name);
+            }
+            2 => {
+                let mut type_proto = TypeProto::default();
+                prost::encoding::message::merge(wire_type, &mut type_proto, buf, ctx)?;
+                println!("ValueInfoProto: Added type");
+                self.type_proto = Some(type_proto);
+            }
+            _ => {
+                println!("ValueInfoProto: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
         }
         Ok(())
     }
@@ -215,19 +276,35 @@ impl Message for ModelProto {
     ) -> Result<(), prost::DecodeError> {
         match tag {
             1 => {
-                prost::encoding::int64::merge(wire_type, &mut self.ir_version, buf, ctx)?;
+                let mut ir_version = 0i64;
+                prost::encoding::int64::merge(wire_type, &mut ir_version, buf, ctx)?;
+                self.ir_version = ir_version;
+                println!("ModelProto: Parsed ir_version: {}", ir_version);
             }
-            8 => {
-                let mut opset = OpSetImport::default();
-                prost::encoding::message::merge(wire_type, &mut opset, buf, ctx)?;
-                self.opset_import.push(opset);
+            2 => {
+                prost::encoding::string::merge(wire_type, &mut self.producer_name, buf, ctx)?;
+                println!("ModelProto: Set producer_name: {}", self.producer_name);
+            }
+            3 => {
+                prost::encoding::string::merge(wire_type, &mut self.producer_version, buf, ctx)?;
+                println!("ModelProto: Set producer_version: {}", self.producer_version);
             }
             7 => {
                 let mut graph = GraphProto::default();
                 prost::encoding::message::merge(wire_type, &mut graph, buf, ctx)?;
                 self.graph = Some(graph);
+                println!("ModelProto: Parsed graph");
             }
-            _ => prost::encoding::skip_field(wire_type, tag, buf, ctx)?,
+            8 => {
+                let mut opset = OpSetImport::default();
+                prost::encoding::message::merge(wire_type, &mut opset, buf, ctx)?;
+                self.opset_import.push(opset);
+                println!("ModelProto: Added opset_import (domain: {}, version: {})", self.opset_import.last().unwrap().domain, self.opset_import.last().unwrap().version);
+            }
+            _ => {
+                println!("ModelProto: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
         }
         Ok(())
     }
@@ -255,21 +332,60 @@ impl Message for GraphProto {
     ) -> Result<(), prost::DecodeError> {
         match tag {
             1 => {
+                let node_index = NODE_COUNTER.fetch_add(1, Ordering::SeqCst);
                 let mut node = NodeProto::default();
                 prost::encoding::message::merge(wire_type, &mut node, buf, ctx)?;
+                println!(
+                    "GraphProto: Parsed Node {} (OpType: {})",
+                    node_index,
+                    node.op_type
+                );
+                println!("  Inputs:");
+                for input in &node.input {
+                    println!("    - {}", input);
+                }
+                println!("  Outputs:");
+                for output in &node.output {
+                    println!("    - {}", output);
+                }
                 self.node.push(node);
             }
+            2 => {
+                prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?;
+                println!("GraphProto: Set name: {}", self.name);
+            }
+            // 5 => {
+            //     prost::encoding::string::merge(wire_type, &mut self.doc_string, buf, ctx)?;
+            //     println!("GraphProto: Set doc_string: {}", self.doc_string);
+            // }
             8 => {
                 let mut init = TensorProto::default();
                 prost::encoding::message::merge(wire_type, &mut init, buf, ctx)?;
+                println!("GraphProto: Added initializer (name: {})", init.name);
                 self.initializer.push(init);
             }
             11 => {
                 let mut output = ValueInfoProto::default();
                 prost::encoding::message::merge(wire_type, &mut output, buf, ctx)?;
+                println!("GraphProto: Added output (name: {})", output.name);
                 self.output.push(output);
             }
-            _ => prost::encoding::skip_field(wire_type, tag, buf, ctx)?,
+            12 => {
+                let mut input = ValueInfoProto::default();
+                prost::encoding::message::merge(wire_type, &mut input, buf, ctx)?;
+                println!("GraphProto: Added input (name: {})", input.name);
+                self.input.push(input);
+            }
+            13 => {
+                let mut value_info = ValueInfoProto::default();
+                prost::encoding::message::merge(wire_type, &mut value_info, buf, ctx)?;
+                println!("GraphProto: Added value_info (name: {})", value_info.name);
+                self.value_info.push(value_info);
+            }
+            _ => {
+                println!("GraphProto: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
         }
         Ok(())
     }
@@ -280,6 +396,7 @@ impl Message for GraphProto {
 
     fn clear(&mut self) {
         *self = GraphProto::default();
+        NODE_COUNTER.store(0, Ordering::SeqCst);
     }
 }
 
@@ -299,22 +416,44 @@ impl Message for NodeProto {
             1 => {
                 let mut input = String::new();
                 prost::encoding::string::merge(wire_type, &mut input, buf, ctx)?;
-                self.input.push(input);
+                self.input.push(input.clone());
+                println!("NodeProto: Added input: {}", input);
             }
             2 => {
                 let mut output = String::new();
                 prost::encoding::string::merge(wire_type, &mut output, buf, ctx)?;
-                self.output.push(output);
+                self.output.push(output.clone());
+                println!("NodeProto: Added output: {}", output);
             }
+            // 3 => {
+            //     prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?;
+            //     println!("NodeProto: Set name: {}", self.name);
+            // }
             4 => {
                 prost::encoding::string::merge(wire_type, &mut self.op_type, buf, ctx)?;
+                println!("NodeProto: Set op_type: {}", self.op_type);
             }
-            3 => {
+            // 5 => {
+            //     prost::encoding::string::merge(wire_type, &mut self.domain, buf, ctx)?;
+            //     println!("NodeProto: Set domain: {}", self.domain);
+            // }
+            7 => {
                 let mut attr = AttributeProto::default();
                 prost::encoding::message::merge(wire_type, &mut attr, buf, ctx)?;
+                println!("NodeProto: Added attribute (name: {})", attr.name);
                 self.attributes.push(attr);
             }
-            _ => prost::encoding::skip_field(wire_type, tag, buf, ctx)?,
+             8 => {
+                // Handle subgraph attributes (e.g., then_branch, else_branch, body)
+                let mut subgraph = GraphProto::default();
+                prost::encoding::message::merge(wire_type, &mut subgraph, buf, ctx)?;
+                println!("NodeProto: Added subgraph for attribute");
+                self.subgraphs.insert(format!("subgraph_{}", self.subgraphs.len()), subgraph);
+            }
+            _ => {
+                println!("NodeProto: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
         }
         Ok(())
     }
@@ -341,34 +480,50 @@ impl Message for AttributeProto {
         ctx: prost::encoding::DecodeContext,
     ) -> Result<(), prost::DecodeError> {
         match tag {
-            1 => {
-                prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?;
-            }
+            // 1 => {
+            //     prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?;
+            //     println!("AttributeProto: Set name: {}", self.name);
+            // }
             2 => {
                 prost::encoding::int64::merge(wire_type, &mut self.i, buf, ctx)?;
+                println!("AttributeProto: Set int: {}", self.i);
             }
             3 => {
                 prost::encoding::float::merge(wire_type, &mut self.f, buf, ctx)?;
+                println!("AttributeProto: Set float: {}", self.f);
             }
             4 => {
                 prost::encoding::bytes::merge(wire_type, &mut self.s, buf, ctx)?;
+                println!("AttributeProto: Set bytes: {:?}", String::from_utf8_lossy(&self.s));
             }
             5 => {
                 let mut tensor = TensorProto::default();
                 prost::encoding::message::merge(wire_type, &mut tensor, buf, ctx)?;
+                println!("AttributeProto: Added tensor (name: {})", tensor.name);
                 self.t = Some(tensor);
             }
             6 => {
                 let mut i = 0i64;
                 prost::encoding::int64::merge(wire_type, &mut i, buf, ctx)?;
                 self.ints.push(i);
+                println!("AttributeProto: Added int to ints: {}", i);
             }
             7 => {
                 let mut f = 0.0f32;
                 prost::encoding::float::merge(wire_type, &mut f, buf, ctx)?;
                 self.floats.push(f);
+                println!("AttributeProto: Added float to floats: {}", f);
             }
-            _ => prost::encoding::skip_field(wire_type, tag, buf, ctx)?,
+             8 => {
+                let mut subgraph = GraphProto::default();
+                prost::encoding::message::merge(wire_type, &mut subgraph, buf, ctx)?;
+                println!("AttributeProto: Added subgraph");
+                self.g = Some(subgraph);
+            }
+            _ => {
+                println!("AttributeProto: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
         }
         Ok(())
     }
@@ -382,6 +537,155 @@ impl Message for AttributeProto {
     }
 }
 
+impl Message for TypeProto {
+    fn encode_raw<B: prost::bytes::BufMut>(&self, _buf: &mut B) {
+        unimplemented!("Encoding not needed")
+    }
+
+    fn merge_field<B: prost::bytes::Buf>(
+        &mut self,
+        tag: u32,
+        wire_type: prost::encoding::WireType,
+        buf: &mut B,
+        ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        println!("Parsing TypeProto (tag: {})", tag);
+        match tag {
+            1 => {
+                let mut tensor_type = TensorTypeProto::default();
+                prost::encoding::message::merge(wire_type, &mut tensor_type, buf, ctx)?;
+                println!("TypeProto: Added tensor_type");
+                self.tensor_type = Some(tensor_type);
+            }
+            _ => {
+                println!("TypeProto: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn encoded_len(&self) -> usize {
+        unimplemented!("Encoded length not needed")
+    }
+
+    fn clear(&mut self) {
+        *self = TypeProto::default();
+    }
+}
+
+impl Message for TensorTypeProto {
+    fn encode_raw<B: prost::bytes::BufMut>(&self, _buf: &mut B) {
+        unimplemented!("Encoding not needed")
+    }
+
+    fn merge_field<B: prost::bytes::Buf>(
+        &mut self,
+        tag: u32,
+        wire_type: prost::encoding::WireType,
+        buf: &mut B,
+        ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        println!("Parsing TensorTypeProto (tag: {})", tag);
+        match tag {
+            1 => {
+                prost::encoding::int32::merge(wire_type, &mut self.elem_type, buf, ctx)?;
+                println!("TensorTypeProto: Set elem_type: {}", self.elem_type);
+            }
+            2 => {
+                let mut shape = TensorShapeProto::default();
+                prost::encoding::message::merge(wire_type, &mut shape, buf, ctx)?;
+                println!("TensorTypeProto: Added shape");
+                self.shape = Some(shape);
+            }
+            _ => {
+                println!("TensorTypeProto: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn encoded_len(&self) -> usize {
+        unimplemented!("Encoded length not needed")
+    }
+
+    fn clear(&mut self) {
+        *self = TensorTypeProto::default();
+    }
+}
+
+impl Message for TensorShapeProto {
+    fn encode_raw<B: prost::bytes::BufMut>(&self, _buf: &mut B) {
+        unimplemented!("Encoding not needed")
+    }
+
+    fn merge_field<B: prost::bytes::Buf>(
+        &mut self,
+        tag: u32,
+        wire_type: prost::encoding::WireType,
+        buf: &mut B,
+        ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        println!("Parsing TensorShapeProto (tag: {})", tag);
+        match tag {
+            1 => {
+                let mut dim = TensorDimension::default();
+                prost::encoding::message::merge(wire_type, &mut dim, buf, ctx)?;
+                println!("TensorShapeProto: Added dimension (dim_value: {})", dim.dim_value);
+                self.dim.push(dim);
+            }
+            _ => {
+                println!("TensorShapeProto: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn encoded_len(&self) -> usize {
+        unimplemented!("Encoded length not needed")
+    }
+
+    fn clear(&mut self) {
+        *self = TensorShapeProto::default();
+    }
+}
+
+impl Message for TensorDimension {
+    fn encode_raw<B: prost::bytes::BufMut>(&self, _buf: &mut B) {
+        unimplemented!("Encoding not needed")
+    }
+
+    fn merge_field<B: prost::bytes::Buf>(
+        &mut self,
+        tag: u32,
+        wire_type: prost::encoding::WireType,
+        buf: &mut B,
+        ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        println!("Parsing Dimension (tag: {})", tag);
+        match tag {
+            1 => {
+                prost::encoding::int64::merge(wire_type, &mut self.dim_value, buf, ctx)?;
+                println!("Dimension: Set dim_value: {}", self.dim_value);
+            }
+            _ => {
+                println!("Dimension: Skipping unknown tag: {}", tag);
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn encoded_len(&self) -> usize {
+        unimplemented!("Encoded length not needed")
+    }
+
+    fn clear(&mut self) {
+        *self = TensorDimension::default();
+    }
+}
 #[derive(Error, Debug)]
 pub enum OrtError {
     #[error("Protobuf error: {0}")]
@@ -409,11 +713,16 @@ pub enum OrtError {
 }
 
 pub type OrtResult<T> = Result<T, OrtError>;
-
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum Dimensions {
+    Fixed(usize),
+    Symbolic(String),
+}
 #[derive(Clone, Serialize)]
 pub enum OrtValue {
     Tensor {
-        shape: Vec<usize>,
+        
+        shape: Vec<Dimensions>,
         #[serde(skip_serializing)]
         dtype: DataType,
         #[serde(skip_serializing)]
@@ -440,7 +749,7 @@ impl fmt::Debug for OrtValue {
 }
 
 impl OrtValue {
-    pub fn shape(&self) -> &Vec<usize> {
+    pub fn shape(&self) -> &Vec<Dimensions> {
         match self {
             OrtValue::Tensor { shape, .. } => shape,
             _ => panic!("Shape only available for Tensor variant"),
@@ -453,31 +762,110 @@ pub enum MapKey {
     String(String),
     Int64(i64),
 }
+#[derive(Debug, Clone, Default)]
+struct ShapeInference {
+    shapes: HashMap<String, Vec<Dimensions>>,
+    value_info: HashMap<String, ValueInfoProto>,
+    graph: GraphProto, // Added
 
+}
+
+impl ShapeInference {
+    fn new(graph: &GraphProto) -> Self {
+        let mut value_info = HashMap::new();
+        for vi in graph.input.iter().chain(graph.output.iter()).chain(graph.value_info.iter()) {
+            value_info.insert(vi.name.clone(), vi.clone());
+        }
+        ShapeInference {
+            shapes: HashMap::new(),
+            value_info,
+            graph: graph.clone(), // Store a clone of the graph
+        }
+    }
+
+    fn infer_shapes(&mut self, inputs: &HashMap<String, OrtValue>) -> OrtResult<()> {
+        // Initialize shapes from inputs
+        for (name, value) in inputs {
+            self.shapes.insert(name.clone(), value.shape().clone());
+        }
+
+        // Iterate through nodes and infer output shapes
+        for node in &self.graph.node {
+            let input_shapes: Vec<Vec<Dimensions>> = node.input.iter()
+                .map(|name| self.shapes.get(name)
+                    .cloned()
+                    .ok_or_else(|| OrtError::MissingInput(name.clone())))
+                .collect::<OrtResult<Vec<_>>>()?;
+
+            let output_shapes = self.infer_node_shapes(node, &input_shapes)?;
+            for (output, shape) in node.output.iter().zip(output_shapes.iter()) {
+                self.shapes.insert(output.clone(), shape.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn infer_node_shapes(&self, node: &NodeProto, input_shapes: &[Vec<Dimensions>]) -> OrtResult<Vec<Vec<Dimensions>>> {
+        match node.op_type.as_str() {
+            
+            "Add" | "Sub" | "Mul" | "Div" => {
+                if input_shapes[0] != input_shapes[1] {
+                    return Err(OrtError::TypeMismatch("Input shapes must match"));
+                }
+                Ok(vec![input_shapes[0].clone()])
+            }
+            "MatMul" => {
+                let shape1 = &input_shapes[0];
+                let shape2 = &input_shapes[1];
+                let ndim1 = shape1.len();
+                let ndim2 = shape2.len();
+                if ndim1 < 2 || ndim2 < 2 {
+                    return Err(OrtError::InvalidTensorData("MatMul requires 2D or higher tensors".into()));
+                }
+                let m = shape1[ndim1 - 2].clone();
+                let n = shape2[ndim2 - 1].clone();
+                let mut out_shape = shape1[..ndim1 - 2].to_vec();
+                out_shape.push(m);
+                out_shape.push(n);
+                Ok(vec![out_shape])
+            }
+            // Add shape inference for other operators (e.g., Softmax, LayerNormalization)
+            _ => Err(OrtError::UnsupportedOp(format!("Shape inference not implemented for {}", node.op_type))),
+        }
+    }
+}
 pub struct OrtEngine {
     model: ModelProto,
     node_registry: HashMap<String, fn(&NodeProto, &[OrtValue]) -> OrtResult<OrtValue>>,
     vendor_ops: HashMap<String, fn(&[u8], &[OrtValue]) -> OrtResult<OrtValue>>,
+    shape_inference: ShapeInference, // Added
 }
 
 // Helper function to convert OrtValue to ndarray
 fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayD<f32>> {
     match ort {
         OrtValue::Tensor { shape, dtype: DataType::Float, data, .. } => {
+            // Check if shape contains symbolic dimensions
+            if shape.iter().any(|d| matches!(d, Dimensions::Symbolic(_))) {
+                return Err(OrtError::InvalidTensorData("Cannot convert symbolic shape to ndarray".into()));
+            }
+            let concrete_shape: Vec<usize> = shape.iter().map(|d| match d {
+                Dimensions::Fixed(n) => *n,
+                Dimensions::Symbolic(_) => unreachable!(), // Handled above
+            }).collect();
             let float_data: Vec<f32> = data
                 .chunks(4)
                 .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
                 .collect();
-            ArrayD::from_shape_vec(shape.clone(), float_data)
+            ArrayD::from_shape_vec(concrete_shape, float_data)
                 .map_err(|_| OrtError::InvalidTensorData("Shape mismatch".into()))
         }
         _ => Err(OrtError::TypeMismatch("Expected float tensor")),
     }
 }
 
-// Helper function to convert ndarray to OrtValue
 fn ndarray_to_ort(array: ArrayD<f32>, dtype: DataType) -> OrtValue {
-    let shape = array.shape().to_vec();
+    let shape: Vec<Dimensions> = array.shape().iter().map(|&n| Dimensions::Fixed(n)).collect();
     let data: Vec<u8> = array
         .into_raw_vec()
         .into_iter()
@@ -496,13 +884,14 @@ impl OrtEngine {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
         let model = ModelProto::decode(&*buffer)?;
+        let shape_inference = ShapeInference::new(model.graph.as_ref().ok_or(OrtError::InvalidModel)?);
 
         let mut engine = Self {
             model,
             node_registry: HashMap::new(),
             vendor_ops: HashMap::new(),
+            shape_inference,
         };
-
         engine.register_core_ops();
         Ok(engine)
     }
@@ -557,7 +946,420 @@ impl OrtEngine {
         self.node_registry.insert("Conv".into(), Self::op_conv);
         self.node_registry.insert("LayerNormalization".into(), Self::op_layer_normalization);
         self.node_registry.insert("Gemm".into(), Self::op_gemm);
+        self.node_registry.insert("CumSum".into(), Self::op_cumsum);
+    self.node_registry.insert("NonZero".into(), Self::op_nonzero);
+    self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
+    self.node_registry.insert("Conv".into(), Self::op_conv);
+    self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
+    self.node_registry.insert("LSTM".into(), Self::op_lstm);
+    self.node_registry.insert("STFT".into(), Self::op_stft);
+    self.node_registry.insert("Resize".into(), Self::op_resize);
     }
+fn op_resize(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Resize requires input tensor"))?)?;
+    let scales = inputs.get(1).map(|s| ort_to_ndarray(s)).transpose()?;
+    let sizes = inputs.get(2).map(|s| match s {
+        OrtValue::Tensor { dtype: DataType::Int64, data, .. } => {
+            data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+        }
+        _ => vec![],
+    }).unwrap_or_default();
+    let mode = node.attributes.iter().find(|a| a.name == "mode")
+        .map(|a| String::from_utf8_lossy(&a.s).to_string())
+        .unwrap_or("nearest".to_string());
+
+    let input_shape = input.shape();
+    let output_shape = if !sizes.is_empty() {
+        sizes
+    } else if let Some(scales) = scales {
+        input_shape.iter().zip(scales.iter()).map(|(&dim, &scale)| (dim as f32 * scale).round() as usize).collect()
+    } else {
+        return Err(OrtError::InvalidTensorData("Resize requires scales or sizes".into()));
+    };
+
+    let mut result = ArrayD::zeros(output_shape.clone());
+
+    if mode == "nearest" {
+        for idx in ndarray::indices(&output_shape[..]) {
+            let mut in_idx = Vec::new();
+            for (i, &dim) in idx.slice().iter().enumerate() {
+                let in_pos = (dim as f32) * (input_shape[i] as f32) / (output_shape[i] as f32);
+                in_idx.push(in_pos.round() as usize);
+            }
+            result[idx.slice()] = input[&in_idx[..]];
+        }
+    } else {
+        return Err(OrtError::UnsupportedOp("Resize only supports nearest mode".into()));
+    }
+
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+    fn op_stft(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    let signal = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("STFT requires signal tensor"))?)?;
+    let frame_length = inputs.get(1).map(|v| match v {
+        OrtValue::Tensor { dtype: DataType::Int64, data, .. } => {
+            Ok(i64::from_le_bytes(data[..8].try_into().unwrap()) as usize)
+        }
+        _ => return Err(OrtError::TypeMismatch("STFT requires Int64 frame_length")),
+    }).ok_or_else(|| OrtError::InvalidTensorData("STFT requires frame_length tensor".into()))?;
+    let frame_step = node.attributes.iter().find(|a| a.name == "frame_step")
+        .map(|a| a.i as usize)
+        .ok_or_else(|| OrtError::InvalidTensorData("STFT requires frame_step attribute".into()))?;
+    let window = inputs.get(2).map(|w| ort_to_ndarray(w)).transpose()?;
+
+    let signal_shape = signal.shape();
+    if signal_shape.len() != 2 {
+        return Err(OrtError::TypeMismatch("STFT requires 2D signal tensor [batch_size, signal_length]"));
+    }
+    let (batch_size, signal_length) = (signal_shape[0], signal_shape[1]);
+
+    let n_fft = frame_length.unwrap();
+    let num_frames = (signal_length - n_fft.clone()) / frame_step + 1;
+    let n_freq = n_fft / 2 + 1; // Number of frequency bins
+    let mut result = ArrayD::zeros(vec![batch_size, num_frames, n_fft, 2]); // Real and imaginary parts
+
+    for b in 0..batch_size {
+        for f in 0..num_frames {
+            let start = f * frame_step;
+            let end = start + n_fft.clone();
+            if end > signal_length {
+                continue;
+            }
+            let frame = signal.slice_axis(Axis(1), ndarray::Slice::from(start..end)).to_owned();
+            let frame = if let Some(w) = &window {
+                frame * w
+            } else {
+                frame
+            };
+
+            // Simple DFT implementation
+            for k in 0..n_freq {
+                let mut real = 0.0;
+                let mut imag = 0.0;
+                for n in 0..n_fft.clone() {
+                    let angle = -2.0 * std::f32::consts::PI * (k as f32) * (n as f32) / (n_fft as f32);
+                    real += frame[[b, n]] * angle.cos();
+                    imag += frame[[b, n]] * angle.sin();
+                }
+                result[[b, f, k, 0]] = real;
+                result[[b, f, k, 1]] = imag;
+            }
+        }
+    }
+
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+    fn op_lstm(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    let x = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("LSTM requires input tensor"))?)?;
+    let w = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("LSTM requires weight tensor"))?)?;
+    let r = ort_to_ndarray(inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("LSTM requires recurrence weight tensor"))?)?;
+    let b = inputs.get(3).map(|b| ort_to_ndarray(b)).transpose()?;
+
+    let direction = node.attributes.iter().find(|a| a.name == "direction")
+        .map(|a| String::from_utf8_lossy(&a.s).to_string())
+        .unwrap_or("forward".to_string());
+    let hidden_size = node.attributes.iter().find(|a| a.name == "hidden_size")
+        .map(|a| a.i as usize)
+        .ok_or_else(|| OrtError::InvalidTensorData("LSTM requires hidden_size attribute".into()))?;
+
+    let x_shape = x.shape();
+    if x_shape.len() != 3 {
+        return Err(OrtError::TypeMismatch("LSTM requires 3D input tensor [seq_length, batch_size, input_size]"));
+    }
+    let (seq_length, batch_size, input_size) = (x_shape[0], x_shape[1], x_shape[2]);
+
+    let w_shape = w.shape();
+    if w_shape.len() != 3 || w_shape[0] != 1 || w_shape[1] != 4 * hidden_size || w_shape[2] != input_size {
+        return Err(OrtError::TypeMismatch("LSTM weight tensor must be [1, 4*hidden_size, input_size]"));
+    }
+    let r_shape = r.shape();
+    if r_shape.len() != 3 || r_shape[0] != 1 || r_shape[1] != 4 * hidden_size || r_shape[2] != hidden_size {
+        return Err(OrtError::TypeMismatch("LSTM recurrence weight tensor must be [1, 4*hidden_size, hidden_size]"));
+    }
+
+    let mut h_t = Array2::zeros((batch_size, hidden_size));
+    let mut c_t = Array2::zeros((batch_size, hidden_size));
+    let mut output = Array3::zeros((seq_length, batch_size, hidden_size));
+
+    let forward = direction != "reverse";
+    let range: Box<dyn Iterator<Item = usize>> = if forward {
+        Box::new(0..seq_length)
+    } else {
+        Box::new((0..seq_length).rev())
+    };
+
+    for t in range {
+        let x_t = x.slice_axis(Axis(0), ndarray::Slice::from(t..t + 1)).into_shape((batch_size, input_size)).unwrap();
+        let gates: Array2<f32> = x_t.dot(&w.slice_axis(Axis(0), ndarray::Slice::from(0..1)).into_shape((4 * hidden_size, input_size)).unwrap().t())
+    + h_t.dot(&r.slice_axis(Axis(0), ndarray::Slice::from(0..1)).into_shape((4 * hidden_size, hidden_size)).unwrap().t());
+let gates = if let Some(bias) = &b {
+    gates + bias.slice_axis(Axis(0), ndarray::Slice::from(0..4 * hidden_size)).into_shape((batch_size, 4 * hidden_size)).unwrap()
+} else {
+    gates.into_shape((batch_size, 4 * hidden_size)).unwrap()
+};
+
+        let (i, f, c, o) = (
+            gates.slice_axis(Axis(1), ndarray::Slice::from(0..hidden_size)).mapv(|x| 1.0 / (1.0 + (-x).exp())),
+            gates.slice_axis(Axis(1), ndarray::Slice::from(hidden_size..2 * hidden_size)).mapv(|x| 1.0 / (1.0 + (-x).exp())),
+            gates.slice_axis(Axis(1), ndarray::Slice::from(2 * hidden_size..3 * hidden_size)).mapv(|x| x.tanh()),
+            gates.slice_axis(Axis(1), ndarray::Slice::from(3 * hidden_size..4 * hidden_size)).mapv(|x| 1.0 / (1.0 + (-x).exp())),
+        );
+
+        c_t = f * &c_t + i * c;
+        h_t = o * c_t.mapv(|x| x.tanh());
+        output.slice_mut(ndarray::s![t, .., ..]).assign(&h_t);
+    }
+
+    Ok(ndarray_to_ort(output.into_dyn(), DataType::Float))
+}
+    fn op_conv_transpose(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("ConvTranspose requires input tensor"))?)?;
+    let weight = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("ConvTranspose requires weight tensor"))?)?;
+    let bias = inputs.get(2).map(|b| ort_to_ndarray(b)).transpose()?;
+
+    let strides = node.attributes.iter().find(|a| a.name == "strides")
+        .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+        .unwrap_or(vec![1, 1]);
+    let pads = node.attributes.iter().find(|a| a.name == "pads")
+        .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+        .unwrap_or(vec![0, 0, 0, 0]);
+    let dilations = node.attributes.iter().find(|a| a.name == "dilations")
+        .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+        .unwrap_or(vec![1, 1]);
+
+    let input_shape = input.shape();
+    let weight_shape = weight.shape();
+    if input_shape.len() != 4 || weight_shape.len() != 4 {
+        return Err(OrtError::TypeMismatch("ConvTranspose requires 4D input and weight tensors"));
+    }
+    let (n, c_in, h_in, w_in) = (input_shape[0], input_shape[1], input_shape[2], input_shape[3]);
+    let (c_in_w, c_out, k_h, k_w) = (weight_shape[0], weight_shape[1], weight_shape[2], weight_shape[3]);
+
+    if c_in != c_in_w {
+        return Err(OrtError::TypeMismatch("ConvTranspose input and weight channels must match"));
+    }
+
+    // Compute output dimensions
+    let h_out = (h_in - 1) * strides[0] + dilations[0] * (k_h - 1) + 1 - 2 * pads[0];
+    let w_out = (w_in - 1) * strides[1] + dilations[1] * (k_w - 1) + 1 - 2 * pads[1];
+    let mut result = ArrayD::zeros(vec![n, c_out, h_out, w_out]);
+
+    // Perform transposed convolution
+    for b in 0..n {
+        for ic in 0..c_in {
+            for ih in 0..h_in {
+                for iw in 0..w_in {
+                    for oc in 0..c_out {
+                        for kh in 0..k_h {
+                            for kw in 0..k_w {
+                                let oh = ih * strides[0] + kh * dilations[0] - pads[0];
+                                let ow = iw * strides[1] + kw * dilations[1] - pads[1];
+                                if oh < h_out && ow < w_out {
+                                    result[[b, oc, oh, ow]] += input[[b, ic, ih, iw]] * weight[[ic, oc, kh, kw]];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Add bias if provided
+    if let Some(b) = bias {
+        for b_idx in 0..n {
+            for oc in 0..c_out {
+                for oh in 0..h_out {
+                    for ow in 0..w_out {
+                        result[[b_idx, oc, oh, ow]] += b[[oc]];
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+    fn op_conv(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Conv requires input tensor"))?)?;
+    let weight = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Conv requires weight tensor"))?)?;
+    let bias = inputs.get(2).map(|b| ort_to_ndarray(b)).transpose()?;
+
+    let strides = node.attributes.iter().find(|a| a.name == "strides")
+        .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+        .unwrap_or(vec![1, 1]);
+    let pads = node.attributes.iter().find(|a| a.name == "pads")
+        .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+        .unwrap_or(vec![0, 0, 0, 0]);
+    let dilations = node.attributes.iter().find(|a| a.name == "dilations")
+        .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+        .unwrap_or(vec![1, 1]);
+
+    let input_shape = input.shape();
+    let weight_shape = weight.shape();
+    if input_shape.len() != 4 || weight_shape.len() != 4 {
+        return Err(OrtError::TypeMismatch("Conv requires 4D input and weight tensors"));
+    }
+    let (n, c_in, h_in, w_in) = (input_shape[0], input_shape[1], input_shape[2], input_shape[3]);
+    let (c_out, c_in_w, k_h, k_w) = (weight_shape[0], weight_shape[1], weight_shape[2], weight_shape[3]);
+
+    if c_in != c_in_w {
+        return Err(OrtError::TypeMismatch("Conv input and weight channels must match"));
+    }
+
+    // Compute output dimensions
+    let h_out = (h_in + 2 * pads[0] - dilations[0] * (k_h - 1) - 1) / strides[0] + 1;
+    let w_out = (w_in + 2 * pads[1] - dilations[1] * (k_w - 1) - 1) / strides[1] + 1;
+    let mut result = ArrayD::zeros(vec![n, c_out, h_out, w_out]);
+
+    // Perform convolution
+    for b in 0..n {
+        for oc in 0..c_out {
+            for oh in 0..h_out {
+                for ow in 0..w_out {
+                    let mut sum = 0.0;
+                    for ic in 0..c_in {
+                        for kh in 0..k_h {
+                            for kw in 0..k_w {
+                                let ih = oh * strides[0] + kh * dilations[0] - pads[0];
+                                let iw = ow * strides[1] + kw * dilations[1] - pads[1];
+                                if ih < h_in && iw < w_in {
+                                    sum += input[[b, ic, ih, iw]] * weight[[oc, ic, kh, kw]];
+                                }
+                            }
+                        }
+                    }
+                    result[[b, oc, oh, ow]] = sum;
+                }
+            }
+        }
+    }
+
+    // Add bias if provided
+    if let Some(b) = bias {
+        for b_idx in 0..n {
+            for oc in 0..c_out {
+                for oh in 0..h_out {
+                    for ow in 0..w_out {
+                        result[[b_idx, oc, oh, ow]] += b[[oc]];
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+    fn op_scatter_nd(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    let data = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("ScatterND requires data tensor"))?)?;
+    let indices = match inputs.get(1) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data, shape, .. }) => {
+            let idx_shape = shape.iter().filter_map(|d| match d {
+                Dimensions::Fixed(n) => Some(*n),
+                _ => None,
+            }).collect::<Vec<_>>();
+            let idx_data: Vec<i64> = data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap())).collect();
+            (idx_shape, idx_data)
+        }
+        _ => return Err(OrtError::TypeMismatch("ScatterND requires Int64 indices")),
+    };
+    let updates = ort_to_ndarray(inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("ScatterND requires updates tensor"))?)?;
+
+    let mut result = data.clone();
+    let (idx_shape, idx_data) = indices;
+    let idx_depth = idx_shape[idx_shape.len() - 1]; // Last dimension of indices gives the depth of each index
+    let num_indices = idx_data.len() / idx_depth;
+
+    // Iterate over indices and update result
+    for i in 0..num_indices {
+        let idx_start = i * idx_depth;
+        let mut index = Vec::new();
+        for j in 0..idx_depth {
+            index.push(idx_data[idx_start + j] as usize);
+        }
+        let update_idx = i; // Assuming updates is 1D or matches index structure
+        result[&index[..]] = updates[[update_idx]];
+    }
+
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+fn op_nonzero(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("NonZero requires one float tensor"))?)?;
+    let shape = array.shape();
+    let ndim = shape.len();
+
+    // Collect indices of non-zero elements
+    let mut indices: Vec<Vec<i64>> = Vec::new();
+    for idx in ndarray::indices(&shape[..]) {
+        let val = array[idx.slice()];
+        if val != 0.0 {
+            indices.push(idx.as_array_view().to_vec().into_iter().map(|x| x as i64).collect());
+        }
+    }
+
+    // Transpose indices to [ndim, num_nonzero]
+    let num_nonzero = indices.len();
+    let mut data = Vec::with_capacity(ndim * num_nonzero * 8);
+    for dim in 0..ndim {
+        for idx in &indices {
+            data.extend_from_slice(&idx[dim].to_le_bytes());
+        }
+    }
+
+    Ok(OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(ndim), Dimensions::Fixed(num_nonzero)],
+        dtype: DataType::Int64,
+        data: Arc::new(data),
+    })
+}
+
+
+    fn op_cumsum(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("CumSum requires one float tensor"))?)?;
+    let axis_tensor = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("CumSum requires axis tensor"))?;
+    let axis = match axis_tensor {
+        OrtValue::Tensor { dtype: DataType::Int64, data, .. } => {
+            i64::from_le_bytes(data[..8].try_into().unwrap()) as usize
+        }
+        _ => return Err(OrtError::TypeMismatch("CumSum requires Int64 axis tensor")),
+    };
+    let exclusive = node.attributes.iter().find(|a| a.name == "exclusive").map(|a| a.i != 0).unwrap_or(false);
+    let reverse = node.attributes.iter().find(|a| a.name == "reverse").map(|a| a.i != 0).unwrap_or(false);
+
+    if axis >= array.ndim() {
+        return Err(OrtError::InvalidTensorData("CumSum axis out of bounds".into()));
+    }
+
+    let mut result = ArrayD::zeros(array.shape());
+    let shape = array.shape();
+
+    // Iterate over all elements, computing cumulative sum along the specified axis
+    for idx in ndarray::indices(&shape[..]) {
+        let mut sum = 0.0;
+        let mut indices: Vec<usize> = idx.as_array_view().to_vec();
+        if reverse {
+            // Reverse cumulative sum
+            for i in (0..=indices[axis]).rev() {
+                indices[axis] = i;
+                if !exclusive || i < indices[axis] {
+                    sum += array[&indices[..]];
+                }
+                result[&indices[..]] = sum;
+            }
+        } else {
+            // Forward cumulative sum
+            for i in 0..=indices[axis] {
+                indices[axis] = i;
+                if !exclusive || i < indices[axis] {
+                    sum += array[&indices[..]];
+                }
+                result[&indices[..]] = sum;
+            }
+        }
+    }
+
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
 
     // Arithmetic Operations
     fn op_add(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
@@ -798,7 +1600,7 @@ impl OrtEngine {
             .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize)
             .collect();
         Ok(OrtValue::Tensor {
-            shape,
+            shape:vec![Dimensions::Fixed(shape.len())],
             dtype: *dtype,
             data: Arc::clone(data),
         })
@@ -813,7 +1615,7 @@ impl OrtEngine {
             OrtValue::Tensor { shape, dtype, data } => {
                 let mut new_shape = shape.clone();
                 for &axis in axes.iter().rev() {
-                    if axis < shape.len() && shape[axis] == 1 {
+                    if axis < shape.len() && shape[axis] == Dimensions::Fixed(1) {
                         new_shape.remove(axis);
                     }
                 }
@@ -836,7 +1638,7 @@ impl OrtEngine {
             OrtValue::Tensor { shape, dtype, data } => {
                 let mut new_shape = shape.clone();
                 for &axis in axes.iter() {
-                    new_shape.insert(axis, 1);
+                    new_shape.insert(axis, Dimensions::Fixed(1));
                 }
                 Ok(OrtValue::Tensor {
                     shape: new_shape,
@@ -878,9 +1680,12 @@ impl OrtEngine {
     fn op_shape(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let tensor = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Shape requires one tensor"))?;
         let shape = tensor.shape();
-        let data: Vec<u8> = shape.iter().map(|&s| s as i64).flat_map(|s| s.to_le_bytes()).collect();
+        let data: Vec<u8> = shape.iter().map(|s| s).flat_map(|s| match(s){
+            Dimensions::Fixed(n) => n.to_le_bytes(),
+            Dimensions::Symbolic(n) => todo!(),
+        }).collect();
         Ok(OrtValue::Tensor {
-            shape: vec![shape.len()],
+            shape: vec![Dimensions::Fixed(shape.len())],
             dtype: DataType::Int64,
             data: Arc::new(data),
         })
@@ -1213,13 +2018,7 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     }
     Ok(ndarray_to_ort(result, DataType::Float))
 }
-    fn op_scatter_nd(_node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        Err(OrtError::UnsupportedOp("ScatterND not implemented".into()))
-    }
-
-    fn op_nonzero(_node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        Err(OrtError::UnsupportedOp("NonZero not implemented".into()))
-    }
+   
 
     fn op_where(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let condition = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Where requires condition tensor"))?)?;
@@ -1243,10 +2042,7 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     }
 
     // Reduction Operations
-    fn op_cumsum(_node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        Err(OrtError::UnsupportedOp("CumSum not implemented".into()))
-    }
-
+    
     // Range
     fn op_range(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let start = match inputs.get(0) {
@@ -1270,7 +2066,7 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let range: Vec<i64> = (start..limit).step_by(delta as usize).collect();
         let data: Vec<u8> = range.iter().flat_map(|x| x.to_le_bytes()).collect();
         Ok(OrtValue::Tensor {
-            shape: vec![range.len()],
+            shape: vec![Dimensions::Fixed(range.len())],
             dtype: DataType::Int64,
             data: Arc::new(data),
         })
@@ -1314,18 +2110,6 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         }
     }
 
-    // Complex Operations (Placeholders)
-    fn op_conv(_node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        Err(OrtError::UnsupportedOp("Conv not implemented".into()))
-    }
-
-    fn op_conv_transpose(_node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        Err(OrtError::UnsupportedOp("ConvTranspose not implemented".into()))
-    }
-
-    fn op_lstm(_node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        Err(OrtError::UnsupportedOp("LSTM not implemented".into()))
-    }
 
     fn op_layer_normalization(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let epsilon = node.attributes.iter().find(|a| a.name == "epsilon").map(|a| a.f).unwrap_or(1e-5);
@@ -1338,14 +2122,6 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let result = (array - mean) / (var + epsilon).mapv(|v| v.sqrt()) * scale;
         let result = if let Some(b) = bias { result + b } else { result };
         Ok(ndarray_to_ort(result, DataType::Float))
-    }
-
-    fn op_stft(_node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        Err(OrtError::UnsupportedOp("STFT not implemented".into()))
-    }
-
-    fn op_resize(_node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        Err(OrtError::UnsupportedOp("Resize not implemented".into()))
     }
 
    fn op_pad(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
@@ -1385,30 +2161,157 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     Ok(ndarray_to_ort(result, DataType::Float))
 }
 
-    pub fn infer(&self, inputs: HashMap<String, OrtValue>) -> OrtResult<HashMap<String, OrtValue>> {
-        let graph = self.model.graph.as_ref().ok_or(OrtError::InvalidModel)?;
-        let mut tensor_map: HashMap<String, OrtValue> = HashMap::new();
+fn op_if(&self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        let condition = match inputs.get(0) {
+            Some(OrtValue::Tensor { dtype: DataType::Float, data, .. }) => {
+                let value = f32::from_le_bytes(data[..4].try_into().unwrap());
+                value != 0.0
+            }
+            _ => return Err(OrtError::TypeMismatch("If requires a float condition tensor")),
+        };
+        let then_branch = node.attributes.iter().find(|a| a.name == "then_branch")
+            .and_then(|a| a.g.as_ref())
+            .ok_or_else(|| OrtError::InvalidTensorData("If requires then_branch subgraph".into()))?;
+        let else_branch = node.attributes.iter().find(|a| a.name == "else_branch")
+            .and_then(|a| a.g.as_ref())
+            .ok_or_else(|| OrtError::InvalidTensorData("If requires else_branch subgraph".into()))?;
+        let subgraph = if condition { then_branch } else { else_branch };
+        let mut subgraph_inputs = HashMap::new();
+        for (i, input) in node.input.iter().skip(1).enumerate() {
+            subgraph_inputs.insert(subgraph.input[i].name.clone(), inputs[i + 1].clone());
+        }
+        let outputs = self.execute_subgraph(subgraph, subgraph_inputs)?;
+        Ok(outputs.into_iter().next().unwrap().1) // Assuming single output for simplicity
+    }
 
-        for tensor in &graph.initializer {
-            tensor_map.insert(tensor.name.clone(), self.parse_tensor(tensor)?);
+   fn op_loop(&self, node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Extract max trip count (M)
+    let max_trip_count = inputs.get(0).map(|v| match v {
+        OrtValue::Tensor { dtype: DataType::Int64, data, .. } => {
+            i64::from_le_bytes(data[..8].try_into().unwrap())
+        }
+        _ => i64::MAX,
+    }).unwrap_or(i64::MAX);
+
+    // Extract initial condition
+    let mut condition = inputs.get(1).map(|v| match v {
+        OrtValue::Tensor { dtype: DataType::Float, data, .. } => {
+            f32::from_le_bytes(data[..4].try_into().unwrap()) != 0.0
+        }
+        _ => true,
+    }).unwrap_or(true);
+
+    // Get the loop body subgraph
+    let body = node.attributes.iter().find(|a| a.name == "body")
+        .and_then(|a| a.g.as_ref())
+        .ok_or_else(|| OrtError::InvalidTensorData("Loop requires body subgraph".into()))?;
+
+    // Initialize state with inputs (skip M and condition)
+    let mut state = inputs[2..].to_vec();
+
+    // Collect scan outputs
+    let mut scan_outputs = vec![];
+
+    let mut trip_count = 0;
+    while condition && trip_count < max_trip_count {
+        // Prepare subgraph inputs
+        let mut subgraph_inputs = HashMap::new();
+        for (i, input) in body.input.iter().enumerate() {
+            if i < state.len() {
+                subgraph_inputs.insert(input.name.clone(), state[i].clone());
+            } else {
+                return Err(OrtError::InvalidTensorData(format!(
+                    "Loop subgraph input {} not found in state",
+                    input.name
+                )));
+            }
         }
 
+        // Execute subgraph
+        let subgraph_outputs = self.execute_subgraph(body, subgraph_inputs)?;
+
+        // Update state with subgraph outputs (first N outputs are state variables)
+        let mut new_state = vec![];
+        for (i, output) in body.output.iter().enumerate().take(state.len()) {
+            if let Some(value) = subgraph_outputs.get(&output.name) {
+                new_state.push(value.clone());
+            } else {
+                return Err(OrtError::MissingOutput(output.name.clone()));
+            }
+        }
+        state = new_state;
+
+        // Collect scan outputs (outputs beyond the state variables)
+        for output in body.output.iter().skip(state.len()) {
+            if let Some(value) = subgraph_outputs.get(&output.name) {
+                scan_outputs.push(value.clone());
+            } else {
+                return Err(OrtError::MissingOutput(output.name.clone()));
+            }
+        }
+
+        // Update condition from subgraph outputs (if provided)
+        if let Some(cond_tensor) = subgraph_outputs.iter().find(|(name, _)| {
+            body.output.iter().any(|o| o.name == name.to_string() && o.type_proto.as_ref().map_or(false, |t| {
+                t.tensor_type.as_ref().map_or(false, |tt| tt.elem_type == DataType::Float as i32)
+            }))
+        }) {
+            if let OrtValue::Tensor { dtype: DataType::Float, data, .. } = &cond_tensor.1 {
+                condition = f32::from_le_bytes(data[..4].try_into().unwrap()) != 0.0;
+            }
+        }
+
+        trip_count += 1;
+    }
+
+    // Return scan outputs as a sequence (or final state if no scan outputs)
+    if !scan_outputs.is_empty() {
+        Ok(OrtValue::Sequence(scan_outputs))
+    } else {
+        // If no scan outputs, return the final state as a sequence
+        Ok(OrtValue::Sequence(state))
+    }
+}
+
+    fn op_scan(self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        let body = node.attributes.iter().find(|a| a.name == "body")
+            .and_then(|a| a.g.as_ref())
+            .ok_or_else(|| OrtError::InvalidTensorData("Scan requires body subgraph".into()))?;
+        let num_scan_inputs = node.attributes.iter().find(|a| a.name == "num_scan_inputs")
+            .map(|a| a.i as usize)
+            .ok_or_else(|| OrtError::InvalidTensorData("Scan requires num_scan_inputs".into()))?;
+        let mut state = inputs[..num_scan_inputs].to_vec();
+        let scan_inputs = inputs[num_scan_inputs..].to_vec();
+        let mut outputs = vec![];
+        for scan_input in scan_inputs {
+            let mut subgraph_inputs = HashMap::new();
+            for (i, input) in body.input.iter().enumerate() {
+                if i < num_scan_inputs {
+                    subgraph_inputs.insert(input.name.clone(), state[i].clone());
+                } else {
+                    subgraph_inputs.insert(input.name.clone(), scan_input.clone());
+                }
+            }
+            let subgraph_outputs = self.execute_subgraph(body, subgraph_inputs)?;
+            state = subgraph_outputs.iter().take(num_scan_inputs).map(|(_, v)| v.clone()).collect();
+            outputs.extend(subgraph_outputs.into_iter().skip(num_scan_inputs).map(|(_, v)| v));
+        }
+        Ok(OrtValue::Sequence(outputs))
+    }
+
+    fn execute_subgraph(&self,graph: &GraphProto, inputs: HashMap<String, OrtValue>) -> OrtResult<HashMap<String, OrtValue>> {
+        let mut tensor_map: HashMap<String, OrtValue> = HashMap::new();
+        for tensor in &graph.initializer {
+            tensor_map.insert(tensor.name.clone(), Self::parse_tensor(&self,tensor)?);
+        }
         tensor_map.extend(inputs);
 
         for node in &graph.node {
             if node.output.is_empty() {
                 return Err(OrtError::InvalidModel);
             }
-
-            let node_inputs = node
-                .input
-                .iter()
-                .map(|name| {
-                    tensor_map
-                        .get(name)
-                        .cloned()
-                        .ok_or_else(|| OrtError::MissingInput(name.clone()))
-                })
+            let node_inputs = node.input.iter()
+                .map(|name| tensor_map.get(name).cloned().ok_or_else(|| OrtError::MissingInput(name.clone())))
                 .collect::<OrtResult<Vec<_>>>()?;
 
             let output = if let Some(op) = self.node_registry.get(&node.op_type) {
@@ -1416,113 +2319,172 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
             } else {
                 return Err(OrtError::UnsupportedOp(node.op_type.clone()));
             };
-
             tensor_map.insert(node.output[0].clone(), output);
         }
 
-        graph
-            .output
-            .iter()
-            .map(|output| {
-                tensor_map
-                    .get(&output.name)
-                    .cloned()
-                    .ok_or_else(|| OrtError::MissingOutput(output.name.clone()))
-                    .map(|v| (output.name.clone(), v))
-            })
-            .collect()
-    }
-
-    fn parse_tensor(&self, proto: &TensorProto) -> OrtResult<OrtValue> {
-        let shape: Vec<usize> = proto.dims.iter().map(|d| *d as usize).collect();
-        let total_elements = shape.iter().product::<usize>();
-
-        match DataType::try_from(proto.data_type)? {
-            DataType::Float => {
-                let data = parse_float_data(proto, total_elements)?;
-                if data.len() != total_elements * 4 {
-                    return Err(OrtError::InvalidTensorData(
-                        "Float tensor data length mismatch".into(),
-                    ));
-                }
-                Ok(OrtValue::Tensor {
-                    shape,
-                    dtype: DataType::Float,
-                    data: Arc::new(data),
-                })
-            }
-            DataType::Int64 => {
-                let data = parse_int64_data(proto, total_elements)?;
-                if data.len() != total_elements * 8 {
-                    return Err(OrtError::InvalidTensorData(
-                        "Int64 tensor data length mismatch".into(),
-                    ));
-                }
-                Ok(OrtValue::Tensor {
-                    shape,
-                    dtype: DataType::Int64,
-                    data: Arc::new(data),
-                })
-            }
-            DataType::String => {
-                let strings = proto
-                    .string_data
-                    .iter()
-                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                    .collect::<Vec<_>>();
-                if strings.len() != total_elements {
-                    return Err(OrtError::InvalidTensorData(
-                        "String tensor data length mismatch".into(),
-                    ));
-                }
-                Ok(OrtValue::Tensor {
-                    shape,
-                    dtype: DataType::String,
-                    data: Arc::new(strings.join("").into_bytes()),
-                })
+        let mut outputs = HashMap::new();
+        for output in &graph.output {
+            if let Some(value) = tensor_map.get(&output.name) {
+                outputs.insert(output.name.clone(), value.clone());
+            } else {
+                return Err(OrtError::MissingOutput(output.name.clone()));
             }
         }
+        Ok(outputs)
     }
+
+  pub fn infer(&self, inputs: HashMap<String, OrtValue>) -> OrtResult<HashMap<String, OrtValue>> {
+    let graph = self.model.graph.as_ref().ok_or(OrtError::InvalidModel)?;
+    let mut shape_inference = ShapeInference::new(graph);
+    shape_inference.infer_shapes(&inputs)?;
+
+    let mut tensor_map: HashMap<String, OrtValue> = HashMap::new();
+    for tensor in &graph.initializer {
+        tensor_map.insert(tensor.name.clone(), self.parse_tensor(tensor)?);
+    }
+    tensor_map.extend(inputs);
+
+    for node in &graph.node {
+        if node.output.is_empty() {
+            return Err(OrtError::InvalidModel);
+        }
+        let node_inputs = node
+            .input
+            .iter()
+            .map(|name| tensor_map.get(name).cloned().ok_or_else(|| OrtError::MissingInput(name.clone())))
+            .collect::<OrtResult<Vec<_>>>()?;
+
+        let output = if let Some(op) = self.node_registry.get(&node.op_type) {
+            op(node, &node_inputs)?
+        } else {
+            return Err(OrtError::UnsupportedOp(node.op_type.clone()));
+        };
+        tensor_map.insert(node.output[0].clone(), output);
+    }
+
+    graph.output.iter()
+        .map(|output| tensor_map.get(&output.name)
+            .cloned()
+            .ok_or_else(|| OrtError::MissingOutput(output.name.clone()))
+            .map(|v| (output.name.clone(), v)))
+        .collect()
+}
+    fn parse_tensor(&self, proto: &TensorProto) -> OrtResult<OrtValue> {
+    let shape: Vec<Dimensions> = proto.dims.iter().map(|&d| {
+        if d >= 0 {
+            Dimensions::Fixed(d as usize)
+        } else {
+            // Use dimension name or a default symbolic identifier
+            Dimensions::Symbolic(format!("dim_{}", d))
+        }
+    }).collect();
+    let total_elements = shape.iter().filter_map(|d| match d {
+        Dimensions::Fixed(n) => Some(*n),
+        Dimensions::Symbolic(_) => None,
+    }).product::<usize>();
+
+    match DataType::try_from(proto.data_type)? {
+        DataType::Float => {
+            let data = parse_float_data(proto, total_elements)?;
+            if data.len() != total_elements * 4 {
+                return Err(OrtError::InvalidTensorData(
+                    "Float tensor data length mismatch".into(),
+                ));
+            }
+            Ok(OrtValue::Tensor {
+                shape,
+                dtype: DataType::Float,
+                data: Arc::new(data),
+            })
+        }
+        DataType::Int64 => {
+            let data = parse_int64_data(proto, total_elements)?;
+            if data.len() != total_elements * 8 {
+                return Err(OrtError::InvalidTensorData(
+                    "Int64 tensor data length mismatch".into(),
+                ));
+            }
+            Ok(OrtValue::Tensor {
+                shape,
+                dtype: DataType::Int64,
+                data: Arc::new(data),
+            })
+        }
+        DataType::String => {
+            let strings = proto
+                .string_data
+                .iter()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .collect::<Vec<_>>();
+            if strings.len() != total_elements {
+                return Err(OrtError::InvalidTensorData(
+                    "String tensor data length mismatch".into(),
+                ));
+            }
+            Ok(OrtValue::Tensor {
+                shape,
+                dtype: DataType::String,
+                data: Arc::new(strings.join("").into_bytes()),
+            })
+        }
+    }
+}
 
     pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
-        let mut file = File::open(path)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer)?;
-        let model = ModelProto::decode(&*buffer)?;
+    let mut file = File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let model = ModelProto::decode(&*buffer)?;
 
-        println!("Opcode Versions:");
-        for opset in &model.opset_import {
-            println!(
-                "  Domain: {}, Version: {}",
-                opset.domain,
-                opset.version
-            );
-        }
-
-        let graph = model.graph.as_ref().ok_or(OrtError::InvalidModel)?;
-        let mut core_ops = HashSet::new();
-        let mut vendor_ops = HashSet::new();
-
-        for node in &graph.node {
-            if node.op_type.contains('.') {
-                vendor_ops.insert(node.op_type.clone());
-            } else {
-                core_ops.insert(node.op_type.clone());
-            }
-        }
-
-        println!("\nCore Operations:");
-        for op in core_ops {
-            println!("  {}", op);
-        }
-
-        println!("\nVendor Operations:");
-        for op in vendor_ops {
-            println!("  {}", op);
-        }
-
-        Ok(())
+    println!("Opcode Versions:");
+    for opset in &model.opset_import {
+        println!(
+            "  Domain: {}, Version: {}",
+            opset.domain,
+            opset.version
+        );
     }
+
+    let graph = model.graph.as_ref().ok_or(OrtError::InvalidModel)?;
+    let mut core_ops = HashSet::new();
+    let mut vendor_ops = HashSet::new();
+
+    println!("\nNodes with Input and Output Names:");
+    for (i, node) in graph.node.iter().enumerate() {
+        if node.op_type.contains('.') {
+            vendor_ops.insert(node.op_type.clone());
+        } else {
+            core_ops.insert(node.op_type.clone());
+        }
+
+        // Print node information
+        println!(
+            "Node {} (OpType: {}):",
+            i,
+            node.op_type
+        );
+        println!("  Inputs:");
+        for input in &node.input {
+            println!("    - {}", input);
+        }
+        println!("  Outputs:");
+        for output in &node.output {
+            println!("    - {}", output);
+        }
+    }
+
+    println!("\nCore Operations:");
+    for op in core_ops {
+        println!("  {}", op);
+    }
+
+    println!("\nVendor Operations:");
+    for op in vendor_ops {
+        println!("  {}", op);
+    }
+
+    Ok(())
+}
 }
 
 fn parse_float_data(proto: &TensorProto, count: usize) -> OrtResult<Vec<u8>> {
@@ -1550,36 +2512,80 @@ fn parse_int64_data(proto: &TensorProto, count: usize) -> OrtResult<Vec<u8>> {
 }
 
 fn main() -> Result<()> {
-    OrtEngine::print_model_info("model.onnx")?;
-    let engine = OrtEngine::new("model.onnx")?;
-    let input_data1: Vec<i64> = (0..128).collect();
-    let input_data2: Vec<i64> = (128..256).collect();
+    //  OrtEngine::print_model_info("/root/github/Kokoros/checkpoints/kokoro-v1.0.onnx")?;
+    let engine = OrtEngine::new("/root/github/Kokoros/checkpoints/kokoro-v1.0.onnx")?;
+    // let input_data1: Vec<i64> = (0..128).collect();
+    // let input_data2: Vec<i64> = (128..256).collect();
 
-    let tokens = vec![
-        OrtValue::Tensor {
-            shape: vec![1, 128],
-            dtype: DataType::Int64,
-            data: Arc::new(
-                input_data1
-                    .iter()
-                    .flat_map(|x| x.to_le_bytes())
-                    .collect::<Vec<u8>>(),
-            ),
-        },
-        OrtValue::Tensor {
-            shape: vec![1, 128],
-            dtype: DataType::Int64,
-            data: Arc::new(
-                input_data2
-                    .iter()
-                    .flat_map(|x| x.to_le_bytes())
-                    .collect::<Vec<u8>>(),
-            ),
-        },
-    ];
-    let seq_input = OrtValue::Sequence(tokens);
+    // let tokens = vec![
+    //     OrtValue::Tensor {
+    //         shape: vec![1, 128],
+    //         dtype: DataType::Int64,
+    //         data: Arc::new(
+    //             input_data1
+    //                 .iter()
+    //                 .flat_map(|x| x.to_le_bytes())
+    //                 .collect::<Vec<u8>>(),
+    //         ),
+    //     },
+    //     OrtValue::Tensor {
+    //         shape: vec![1, 128],
+    //         dtype: DataType::Int64,
+    //         data: Arc::new(
+    //             input_data2
+    //                 .iter()
+    //                 .flat_map(|x| x.to_le_bytes())
+    //                 .collect::<Vec<u8>>(),
+    //         ),
+    //     },
+    // ];
+// Create a tensor directly instead of a sequence
+    // Example input data
+    let tokens: Vec<Vec<i64>> = vec![vec![0, 50, 156, 43, 102, 4, 0]]; // [1, 7]
+    let styles: Vec<Vec<f32>> = vec![vec![0.1, 0.2, 0.3, 0.4]]; // [1, 4] (adjust style_dim as needed)
+    let speed: f32 = 1.0;
+
+    // Create tokens tensor
+    let batch_size = tokens.len();
+    let sequence_length = tokens[0].len();
+    let tokens_flat: Vec<i64> = tokens.into_iter().flatten().collect();
+    let tokens_tensor = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(sequence_length)],
+        dtype: DataType::Int64,
+        data: Arc::new(
+            tokens_flat
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        ),
+    };
+
+    // Create style tensor
+    let style_dim = styles[0].len();
+    let style_flat: Vec<f32> = styles.into_iter().flatten().collect();
+    let style_tensor = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(style_dim)],
+        dtype: DataType::Float,
+        data: Arc::new(
+            style_flat
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        ),
+    };
+
+    // Create speed tensor
+    let speed_tensor = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(speed.to_le_bytes().to_vec()),
+    };
+
+    // Create input HashMap
     let mut inputs = HashMap::new();
-    inputs.insert("token_sequence".to_string(), seq_input);
+    inputs.insert("tokens".to_string(), tokens_tensor);
+    inputs.insert("style".to_string(), style_tensor);
+    inputs.insert("speed".to_string(), speed_tensor);
     let outputs = engine.infer(inputs)?;
     match outputs.get("predictions") {
         Some(OrtValue::Map(result_map)) => {

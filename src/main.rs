@@ -9,6 +9,7 @@ mod tests {
     pub mod onnx_model_test;
     pub mod sequence_map_test;
     pub mod bert_ops_test;
+    pub mod kokoro_ops_test;
 }
 
 // Static counter for node indexing
@@ -27,7 +28,7 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
-use ndarray::{Array2, Array3, ArrayD, Axis, Dimension};
+use ndarray::{Array, Array2, Array3, Array4, ArrayD, Axis, Dimension};
 use num_traits::{Float, ToBytes};
 
 // Simplified ONNX type definitions
@@ -1213,6 +1214,18 @@ impl OrtEngine {
         self.node_registry.insert("ReduceMax".into(), Self::op_reduce_max);
         self.node_registry.insert("Attention".into(), Self::op_attention);
         
+        // Kokoro-specific operators
+        self.node_registry.insert("Embedding".into(), Self::op_embedding);
+        self.node_registry.insert("ConstantOfShapeInt64".into(), Self::op_constant_of_shape_int64);
+        self.node_registry.insert("LayerNormalizationWithEpsilon".into(), Self::op_layer_normalization_with_epsilon);
+        self.node_registry.insert("Expand".into(), Self::op_expand);
+        self.node_registry.insert("PositionEmbeddings".into(), Self::op_position_embeddings);
+        self.node_registry.insert("TokenTypeEmbeddings".into(), Self::op_token_type_embeddings);
+        self.node_registry.insert("BertAttention".into(), Self::op_bert_attention);
+        self.node_registry.insert("BertIntermediate".into(), Self::op_bert_intermediate);
+        self.node_registry.insert("BertOutput".into(), Self::op_bert_output);
+        self.node_registry.insert("BertPooler".into(), Self::op_bert_pooler);
+        
         // Sequence operators
         self.node_registry.insert("SequenceAt".into(), Self::op_sequence_at);
         self.node_registry.insert("SequenceConstruct".into(), Self::op_sequence_construct);
@@ -1229,9 +1242,7 @@ impl OrtEngine {
         self.node_registry.insert("MapKeys".into(), Self::op_map_keys);
         
         // Control flow operators (improved)
-        self.node_registry.insert("If".into(), Self::op_if);
-        self.node_registry.insert("Loop".into(), Self::op_loop);
-        self.node_registry.insert("Scan".into(), Self::op_scan);
+        
         
         // Other operators
         self.node_registry.insert("CumSum".into(), Self::op_cumsum);
@@ -2126,7 +2137,1713 @@ fn op_matmul(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     Ok(ndarray_to_ort(result, DataType::Float))
 }
 
+fn op_sequence_at(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // SequenceAt extracts a tensor from a sequence at a given position
+    let sequence = match inputs.get(0) {
+        Some(OrtValue::Sequence(seq)) => seq,
+        _ => return Err(OrtError::TypeMismatch("SequenceAt requires a sequence as first input")),
+    };
+    
+    let position = match inputs.get(1) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+            i64::from_le_bytes(data[..8].try_into().unwrap())
+        },
+        _ => return Err(OrtError::TypeMismatch("SequenceAt requires an Int64 position tensor as second input")),
+    };
+    
+    let pos = if position < 0 {
+        (sequence.len() as i64 + position) as usize
+    } else {
+        position as usize
+    };
+    
+    if pos >= sequence.len() {
+        return Err(OrtError::IndexError("Position out of bounds in SequenceAt"));
+    }
+    
+    Ok(sequence[pos].clone())
+}
 
+fn op_sequence_construct(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // SequenceConstruct creates a sequence from input tensors
+    if inputs.is_empty() {
+        return Err(OrtError::InvalidTensorData("SequenceConstruct requires at least one input tensor".into()));
+    }
+    
+    Ok(OrtValue::Sequence(inputs.to_vec()))
+}
+
+fn op_sequence_empty(node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // SequenceEmpty creates an empty sequence
+    // Optional attribute 'dtype' specifies the element type (not used in this implementation)
+    let _dtype = node.attributes.iter()
+        .find(|a| a.name == "dtype")
+        .map(|a| a.i)
+        .unwrap_or(1); // Default to float
+        
+    Ok(OrtValue::Sequence(Vec::new()))
+}
+
+fn op_sequence_erase(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // SequenceErase removes a tensor from a sequence at a given position
+    let sequence = match inputs.get(0) {
+        Some(OrtValue::Sequence(seq)) => seq.clone(),
+        _ => return Err(OrtError::TypeMismatch("SequenceErase requires a sequence as first input")),
+    };
+    
+    let position = match inputs.get(1) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+            i64::from_le_bytes(data[..8].try_into().unwrap())
+        },
+        _ => return Err(OrtError::TypeMismatch("SequenceErase requires an Int64 position tensor as second input")),
+    };
+    
+    let pos = if position < 0 {
+        (sequence.len() as i64 + position) as usize
+    } else {
+        position as usize
+    };
+    
+    if pos >= sequence.len() {
+        return Err(OrtError::IndexError("Position out of bounds in SequenceErase"));
+    }
+    
+    let mut result = sequence.clone();
+    result.remove(pos);
+    
+    Ok(OrtValue::Sequence(result))
+}
+
+fn op_sequence_insert(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // SequenceInsert inserts a tensor into a sequence at a given position
+    let sequence = match inputs.get(0) {
+        Some(OrtValue::Sequence(seq)) => seq.clone(),
+        _ => return Err(OrtError::TypeMismatch("SequenceInsert requires a sequence as first input")),
+    };
+    
+    let tensor = match inputs.get(1) {
+        Some(tensor) => tensor.clone(),
+        _ => return Err(OrtError::TypeMismatch("SequenceInsert requires a tensor as second input")),
+    };
+    
+    let position = if inputs.len() > 2 {
+        match inputs.get(2) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                i64::from_le_bytes(data[..8].try_into().unwrap())
+            },
+            _ => return Err(OrtError::TypeMismatch("SequenceInsert requires an Int64 position tensor as third input")),
+        }
+    } else {
+        sequence.len() as i64 // Default to append
+    };
+    
+    let pos = if position < 0 {
+        (sequence.len() as i64 + position) as usize
+    } else {
+        position as usize
+    };
+    
+    if pos > sequence.len() {
+        return Err(OrtError::IndexError("Position out of bounds in SequenceInsert"));
+    }
+    
+    let mut result = sequence.clone();
+    result.insert(pos, tensor);
+    
+    Ok(OrtValue::Sequence(result))
+}
+
+fn op_sequence_length(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // SequenceLength returns the length of a sequence
+    let sequence = match inputs.get(0) {
+        Some(OrtValue::Sequence(seq)) => seq,
+        _ => return Err(OrtError::TypeMismatch("SequenceLength requires a sequence as input")),
+    };
+    
+    let length = sequence.len() as i64;
+    let data = length.to_le_bytes().to_vec();
+    
+    Ok(OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1)],
+        dtype: DataType::Int64,
+        data: Arc::new(data),
+    })
+}
+
+// Map Operators Implementation
+fn op_map_from_tensor(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // MapFromTensor creates a map from key and value tensors
+    let keys = match inputs.get(0) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+            data.chunks(8).map(|c| MapKey::Int64(i64::from_le_bytes(c.try_into().unwrap()))).collect::<Vec<_>>()
+        },
+        Some(OrtValue::Tensor { dtype: DataType::String, data, .. }) => {
+            // Simple implementation - assumes each 8 bytes is a string length followed by string data
+            let mut keys = Vec::new();
+            let mut i = 0;
+            while i < data.len() {
+                let len = u64::from_le_bytes(data[i..i+8].try_into().unwrap()) as usize;
+                i += 8;
+                if i + len > data.len() {
+                    break;
+                }
+                let s = String::from_utf8_lossy(&data[i..i+len]).to_string();
+                keys.push(MapKey::String(s));
+                i += len;
+            }
+            keys
+        },
+        _ => return Err(OrtError::TypeMismatch("MapFromTensor requires keys tensor as first input")),
+    };
+    
+    let values = match inputs.get(1) {
+        Some(value_tensor @ OrtValue::Tensor { .. }) => {
+            // For simplicity, we'll assume the values tensor can be split evenly among the keys
+            let shape = value_tensor.shape();
+            if shape.is_empty() {
+                return Err(OrtError::InvalidTensorData("Values tensor must have at least one dimension".into()));
+            }
+            
+            // Extract values based on the first dimension
+            let mut values = Vec::new();
+            // This is a simplified implementation - in a real implementation, we would need to split the tensor properly
+            values.push(value_tensor.clone());
+            values
+        },
+        _ => return Err(OrtError::TypeMismatch("MapFromTensor requires values tensor as second input")),
+    };
+    
+    if keys.len() != values.len() {
+        return Err(OrtError::InvalidTensorData(format!(
+            "Number of keys ({}) must match number of values ({})",
+            keys.len(), values.len()
+        )));
+    }
+    
+    let mut map = IndexMap::new();
+    for (key, value) in keys.into_iter().zip(values.into_iter()) {
+        map.insert(key, value);
+    }
+    
+    Ok(OrtValue::Map(map))
+}
+
+fn op_map_to_tensor(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // MapToTensor converts a map to key and value tensors
+    let map = match inputs.get(0) {
+        Some(OrtValue::Map(map)) => map,
+        _ => return Err(OrtError::TypeMismatch("MapToTensor requires a map as input")),
+    };
+    
+    // Extract keys
+    let keys: Vec<_> = map.keys().collect();
+    
+    // Create key tensor
+    let key_tensor = match keys.first() {
+        Some(MapKey::Int64(_)) => {
+            let data: Vec<u8> = keys.iter().flat_map(|k| {
+                if let MapKey::Int64(i) = k {
+                    i.to_le_bytes().to_vec()
+                } else {
+                    vec![] // Should not happen if all keys are the same type
+                }
+            }).collect();
+            
+            OrtValue::Tensor {
+                shape: vec![Dimensions::Fixed(keys.len())],
+                dtype: DataType::Int64,
+                data: Arc::new(data),
+            }
+        },
+        Some(MapKey::String(_)) => {
+            // Simple implementation - concatenate all strings with their lengths
+            let mut data = Vec::new();
+            for k in keys.clone() {
+                if let MapKey::String(s) = k {
+                    let bytes = s.as_bytes();
+                    let len = bytes.len() as u64;
+                    data.extend_from_slice(&len.to_le_bytes());
+                    data.extend_from_slice(bytes);
+                }
+            }
+            
+            OrtValue::Tensor {
+                shape: vec![Dimensions::Fixed(keys.len())],
+                dtype: DataType::String,
+                data: Arc::new(data),
+            }
+        },
+        None => {
+            // Empty map
+            OrtValue::Tensor {
+                shape: vec![Dimensions::Fixed(0)],
+                dtype: DataType::Int64, // Default
+                data: Arc::new(Vec::new()),
+            }
+        },
+    };
+    
+    // Create value tensor - simplified implementation
+    // In a real implementation, we would need to combine all values into a single tensor
+    let value_tensor = if let Some(first_value) = map.values().next() {
+        first_value.clone()
+    } else {
+        // Empty map
+        OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(0)],
+            dtype: DataType::Float, // Default
+            data: Arc::new(Vec::new()),
+        }
+    };
+    
+    // Return both tensors as a sequence
+    Ok(OrtValue::Sequence(vec![key_tensor, value_tensor]))
+}
+
+fn op_map_get(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // MapGet retrieves a value from a map by key
+    let map = match inputs.get(0) {
+        Some(OrtValue::Map(map)) => map,
+        _ => return Err(OrtError::TypeMismatch("MapGet requires a map as first input")),
+    };
+    
+    let key = match inputs.get(1) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+            MapKey::Int64(i64::from_le_bytes(data[..8].try_into().unwrap()))
+        },
+        Some(OrtValue::Tensor { dtype: DataType::String, data, .. }) => {
+            // Simple implementation - assumes the tensor contains a single string
+            MapKey::String(String::from_utf8_lossy(data).to_string())
+        },
+        _ => return Err(OrtError::TypeMismatch("MapGet requires a key tensor as second input")),
+    };
+    
+    match map.get(&key) {
+        Some(value) => Ok(value.clone()),
+        None => {
+            // Return default value if provided, otherwise error
+            if inputs.len() > 2 {
+                Ok(inputs[2].clone())
+            } else {
+                Err(OrtError::IndexError("Key not found in map"))
+            }
+        }
+    }
+}
+
+fn op_map_has_key(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // MapHasKey checks if a key exists in a map
+    let map = match inputs.get(0) {
+        Some(OrtValue::Map(map)) => map,
+        _ => return Err(OrtError::TypeMismatch("MapHasKey requires a map as first input")),
+    };
+    
+    let key = match inputs.get(1) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+            MapKey::Int64(i64::from_le_bytes(data[..8].try_into().unwrap()))
+        },
+        Some(OrtValue::Tensor { dtype: DataType::String, data, .. }) => {
+            // Simple implementation - assumes the tensor contains a single string
+            MapKey::String(String::from_utf8_lossy(data).to_string())
+        },
+        _ => return Err(OrtError::TypeMismatch("MapHasKey requires a key tensor as second input")),
+    };
+    
+    let has_key = map.contains_key(&key) as i64;
+    let data = has_key.to_le_bytes().to_vec();
+    
+    Ok(OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1)],
+        dtype: DataType::Int64,
+        data: Arc::new(data),
+    })
+}
+
+fn op_map_keys(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // MapKeys returns all keys in a map
+    let map = match inputs.get(0) {
+        Some(OrtValue::Map(map)) => map,
+        _ => return Err(OrtError::TypeMismatch("MapKeys requires a map as input")),
+    };
+    
+    // Extract keys
+    let keys: Vec<_> = map.keys().collect();
+    
+    // Create key tensor
+    let key_tensor = match keys.first() {
+        Some(MapKey::Int64(_)) => {
+            let data: Vec<u8> = keys.iter().flat_map(|k| {
+                if let MapKey::Int64(i) = k {
+                    i.to_le_bytes().to_vec()
+                } else {
+                    vec![] // Should not happen if all keys are the same type
+                }
+            }).collect();
+            
+            OrtValue::Tensor {
+                shape: vec![Dimensions::Fixed(keys.len())],
+                dtype: DataType::Int64,
+                data: Arc::new(data),
+            }
+        },
+        Some(MapKey::String(_)) => {
+            // Simple implementation - concatenate all strings with their lengths
+            let mut data = Vec::new();
+            for k in keys.clone() {
+                if let MapKey::String(s) = k {
+                    let bytes = s.as_bytes();
+                    let len = bytes.len() as u64;
+                    data.extend_from_slice(&len.to_le_bytes());
+                    data.extend_from_slice(bytes);
+                }
+            }
+            
+            OrtValue::Tensor {
+                shape: vec![Dimensions::Fixed(keys.len())],
+                dtype: DataType::String,
+                data: Arc::new(data),
+            }
+        },
+        None => {
+            // Empty map
+            OrtValue::Tensor {
+                shape: vec![Dimensions::Fixed(0)],
+                dtype: DataType::Int64, // Default
+                data: Arc::new(Vec::new()),
+            }
+        },
+    };
+    
+    Ok(key_tensor)
+} 
+// BERT-specific operations
+fn op_erf(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Erf computes the error function of the input tensor
+    let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Erf requires one float tensor"))?)?;
+    
+    // Real implementation of the error function using Abramowitz and Stegun approximation
+    let result = array.mapv(|x| {
+        // Constants for approximation
+        let a1 = 0.254829592;
+        let a2 = -0.284496736;
+        let a3 = 1.421413741;
+        let a4 = -1.453152027;
+        let a5 = 1.061405429;
+        let p = 0.3275911;
+        
+        // Save the sign of x
+        let sign = if x < 0.0 { -1.0 } else { 1.0 };
+        let x = x.abs();
+        
+        // A&S formula 7.1.26
+        let t = 1.0 / (1.0 + p * x);
+        let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
+        
+        sign * y
+    });
+    
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+
+fn op_gelu(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // GELU (Gaussian Error Linear Unit) activation function
+    let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GELU requires one float tensor"))?)?;
+    
+    // Real implementation of GELU using the formula: GELU(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
+    // or the approximation: GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
+    let result = array.mapv(|x| {
+        // Using the approximation formula which is faster and still accurate
+        let sqrt_2_over_pi = 0.7978845608; // sqrt(2/π)
+        let coef = 0.044715;
+        
+        let inner = sqrt_2_over_pi * (x + coef * x.powi(3));
+        0.5 * x * (1.0 + inner.tanh())
+        
+        // Alternative implementation using erf:
+        // let a1 = 0.254829592;
+        // let a2 = -0.284496736;
+        // let a3 = 1.421413741;
+        // let a4 = -1.453152027;
+        // let a5 = 1.061405429;
+        // let p = 0.3275911;
+        // 
+        // // Calculate x / sqrt(2)
+        // let x_scaled = x / 1.4142135623730951;
+        // 
+        // // Save the sign of x_scaled
+        // let sign = if x_scaled < 0.0 { -1.0 } else { 1.0 };
+        // let x_abs = x_scaled.abs();
+        // 
+        // // A&S formula 7.1.26 for erf
+        // let t = 1.0 / (1.0 + p * x_abs);
+        // let erf = sign * (1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x_abs * x_abs).exp());
+        // 
+        // // GELU formula
+        // 0.5 * x * (1.0 + erf)
+    });
+    
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+
+fn op_split(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Split divides a tensor into multiple parts along a specified axis
+    let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Split requires input tensor"))?)?;
+    
+    // Get axis attribute
+    let axis = node.attributes.iter().find(|a| a.name == "axis")
+        .map(|a| a.i as usize)
+        .unwrap_or(0);
+    
+    // Get split attribute (sizes of each output)
+    let split = if inputs.len() > 1 {
+        // Split sizes provided as input tensor
+        match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+            }
+            _ => return Err(OrtError::TypeMismatch("Split requires Int64 split tensor as second input")),
+        }
+    } else {
+        // Split sizes provided as attribute
+        node.attributes.iter().find(|a| a.name == "split")
+            .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+            .unwrap_or_else(|| {
+                // If not provided, split equally
+                let dim_size = input.shape()[axis];
+                let num_outputs = node.output.len();
+                let size = dim_size / num_outputs;
+                vec![size; num_outputs]
+            })
+    };
+    
+    // Create a sequence of output tensors
+    let mut outputs = Vec::new();
+    let mut start_idx = 0;
+    
+    for &size in &split {
+        // Create slice for this split
+        let mut indices = Vec::new();
+        for dim in 0..input.ndim() {
+            if dim == axis {
+                indices.push(ndarray::SliceInfoElem::Slice {
+                    start: start_idx as isize,
+                    end: Some((start_idx + size) as isize),
+                    step: 1,
+                });
+                start_idx += size;
+            } else {
+                indices.push(ndarray::SliceInfoElem::Slice {
+                    start: 0,
+                    end: None,
+                    step: 1,
+                });
+            }
+        }
+        
+        // Extract the slice
+        let slice = input.slice(&indices[..]);
+        let output = ndarray_to_ort(slice.to_owned(), DataType::Float);
+        outputs.push(output);
+    }
+    
+    Ok(OrtValue::Sequence(outputs))
+}
+
+fn op_dropout(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Dropout randomly zeroes elements of the input tensor with probability p
+    // In inference mode, dropout is a no-op (just returns the input)
+    let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Dropout requires input tensor"))?)?;
+    
+    // Get ratio attribute (probability of dropping)
+    let _ratio = if inputs.len() > 1 {
+        match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Float, data, .. }) => {
+                f32::from_le_bytes(data[..4].try_into().unwrap())
+            }
+            _ => 0.5, // Default ratio
+        }
+    } else {
+        node.attributes.iter().find(|a| a.name == "ratio")
+            .map(|a| a.f)
+            .unwrap_or(0.5)
+    };
+    
+    // In inference mode, dropout is a no-op
+    // Return the input tensor and a mask of ones
+    let mask = ArrayD::ones(input.shape());
+    
+    // Return both the input and the mask as a sequence
+    let output_tensor = ndarray_to_ort(input, DataType::Float);
+    let mask_tensor = ndarray_to_ort(mask, DataType::Float);
+    
+    Ok(OrtValue::Sequence(vec![output_tensor, mask_tensor]))
+}
+
+fn op_einsum(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Einsum performs tensor contractions according to the Einstein summation convention
+    // Get equation attribute
+    let equation = node.attributes.iter().find(|a| a.name == "equation")
+        .map(|a| String::from_utf8_lossy(&a.s).to_string())
+        .ok_or_else(|| OrtError::InvalidTensorData("Einsum requires equation attribute".into()))?;
+    
+    // Parse equation
+    let parts: Vec<&str> = equation.split("->").collect();
+    if parts.len() != 2 {
+        return Err(OrtError::InvalidTensorData("Invalid Einsum equation format".into()));
+    }
+    
+    let input_subscripts: Vec<&str> = parts[0].split(',').collect();
+    let output_subscript = parts[1].trim();
+    
+    // For now, implement only the most common case in BERT: batch matrix multiplication
+    // Example: "abc,acd->abd" (batched matrix multiplication)
+    if input_subscripts.len() == 2 && 
+       input_subscripts[0].len() == 3 && 
+       input_subscripts[1].len() == 3 && 
+       output_subscript.len() == 3 {
+        
+        let a = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Einsum requires input tensors"))?)?;
+        let b = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Einsum requires input tensors"))?)?;
+        
+        // Check if this is a batched matrix multiplication pattern
+        if input_subscripts[0].chars().nth(0) == input_subscripts[1].chars().nth(0) && 
+           input_subscripts[0].chars().nth(2) == input_subscripts[1].chars().nth(1) && 
+           output_subscript.chars().nth(0) == input_subscripts[0].chars().nth(0) && 
+           output_subscript.chars().nth(1) == input_subscripts[0].chars().nth(1) && 
+           output_subscript.chars().nth(2) == input_subscripts[1].chars().nth(2) {
+            
+            // This is batched matrix multiplication: [batch, m, k] @ [batch, k, n] -> [batch, m, n]
+            let batch = a.shape()[0];
+            let m = a.shape()[1];
+            let k = a.shape()[2];
+            let n = b.shape()[2];
+            
+            let mut result = Array3::zeros((batch, m, n));
+            
+            for b_idx in 0..batch {
+                let a_slice = a.slice(ndarray::s![b_idx, .., ..]);
+                let b_slice = b.slice(ndarray::s![b_idx, .., ..]);
+                let mut res_slice = result.slice_mut(ndarray::s![b_idx, .., ..]);
+                res_slice.assign(&a_slice.dot(&b_slice));
+            }
+            
+            return Ok(ndarray_to_ort(result.into_dyn(), DataType::Float));
+        }
+    }
+    
+    // Fallback for unsupported patterns
+    Err(OrtError::UnsupportedOp(format!("Unsupported Einsum equation: {}", equation)))
+}
+
+fn op_topk(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // TopK finds the k largest or smallest elements along a specified axis
+    let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("TopK requires input tensor"))?)?;
+    
+    // Get k value
+    let k = if inputs.len() > 1 {
+        match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                i64::from_le_bytes(data[..8].try_into().unwrap()) as usize
+            }
+            _ => return Err(OrtError::TypeMismatch("TopK requires Int64 k tensor as second input")),
+        }
+    } else {
+        node.attributes.iter().find(|a| a.name == "k")
+            .map(|a| a.i as usize)
+            .ok_or_else(|| OrtError::InvalidTensorData("TopK requires k attribute or input".into()))?
+    };
+    
+    // Get axis attribute
+    let axis = node.attributes.iter().find(|a| a.name == "axis")
+        .map(|a| a.i as usize)
+        .unwrap_or(input.ndim() - 1); // Default to last axis
+    
+    // Get largest attribute
+    let largest = node.attributes.iter().find(|a| a.name == "largest")
+        .map(|a| a.i != 0)
+        .unwrap_or(true); // Default to true
+    
+    // Get sorted attribute
+    let sorted = node.attributes.iter().find(|a| a.name == "sorted")
+        .map(|a| a.i != 0)
+        .unwrap_or(true); // Default to true
+    
+    // Create output arrays for values and indices
+    let mut shape = input.shape().to_vec();
+    shape[axis] = k;
+    let mut values = ArrayD::zeros(shape.clone());
+    let mut indices = ArrayD::zeros(shape.clone());
+    
+    // Process each slice along the specified axis
+    let axis_size = input.shape()[axis];
+    
+    // Simple implementation for 2D case
+    if input.ndim() == 2 {
+        if axis == 1 {
+            // Process each row
+            for i in 0..input.shape()[0] {
+                let row = input.slice(ndarray::s![i, ..]);
+                let mut pairs: Vec<(usize, f32)> = row.iter()
+                    .enumerate()
+                    .map(|(j, &val)| (j, val))
+                    .collect();
+                
+                // Sort by value
+                if largest {
+                    pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                } else {
+                    pairs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                }
+                
+                // Take top k
+                pairs.truncate(k);
+                
+                // If sorted is false, restore original order
+                if !sorted {
+                    pairs.sort_by_key(|&(idx, _)| idx);
+                }
+                
+                // Fill output arrays
+                for (j, (idx, val)) in pairs.iter().enumerate() {
+                    values[[i, j]] = *val;
+                    indices[[i, j]] = *idx as f32;
+                }
+            }
+        } else {
+            // Process each column
+            for j in 0..input.shape()[1] {
+                let col = input.slice(ndarray::s![.., j]);
+                let mut pairs: Vec<(usize, f32)> = col.iter()
+                    .enumerate()
+                    .map(|(i, &val)| (i, val))
+                    .collect();
+                
+                // Sort by value
+                if largest {
+                    pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                } else {
+                    pairs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                }
+                
+                // Take top k
+                pairs.truncate(k);
+                
+                // If sorted is false, restore original order
+                if !sorted {
+                    pairs.sort_by_key(|&(idx, _)| idx);
+                }
+                
+                // Fill output arrays
+                for (i, (idx, val)) in pairs.iter().enumerate() {
+                    values[[i, j]] = *val;
+                    indices[[i, j]] = *idx as f32;
+                }
+            }
+        }
+    } else {
+        // For higher dimensions, we'd need a more complex implementation
+        return Err(OrtError::UnsupportedOp("TopK for tensors with more than 2 dimensions is not implemented".into()));
+    }
+    
+    // Convert indices to Int64
+    let indices_data: Vec<u8> = indices.iter()
+        .map(|&idx| (idx as i64).to_le_bytes())
+        .flatten()
+        .collect();
+    
+    let indices_tensor = OrtValue::Tensor {
+        shape: shape.iter().map(|&d| Dimensions::Fixed(d)).collect(),
+        dtype: DataType::Int64,
+        data: Arc::new(indices_data),
+    };
+    
+    // Return both values and indices as a sequence
+    Ok(OrtValue::Sequence(vec![
+        ndarray_to_ort(values, DataType::Float),
+        indices_tensor,
+    ]))
+}
+
+fn op_gather_elements(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // GatherElements gathers elements from a tensor at specified indices
+    let data = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GatherElements requires data tensor"))?)?;
+    
+    let indices = match inputs.get(1) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data: idx_data, shape: idx_shape, .. }) => {
+            // Convert indices to a usable format
+            let concrete_shape: Vec<usize> = idx_shape.iter().map(|d| match d {
+                Dimensions::Fixed(n) => Ok(*n),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Cannot use symbolic shape for indices".into())),
+            }).collect::<Result<_, _>>()?;
+            
+            let indices_vec: Vec<i64> = idx_data.chunks(8)
+                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            
+            ArrayD::from_shape_vec(concrete_shape, indices_vec)
+                .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for indices".into()))?
+        }
+        _ => return Err(OrtError::TypeMismatch("GatherElements requires Int64 indices tensor")),
+    };
+    
+    // Get axis attribute
+    let axis = node.attributes.iter().find(|a| a.name == "axis")
+        .map(|a| a.i as usize)
+        .unwrap_or(0); // Default to first axis
+    
+    // Create output tensor with same shape as indices
+    let mut result = ArrayD::zeros(indices.shape());
+    
+    // Gather elements
+    for idx in ndarray::indices(indices.shape()) {
+        let mut data_idx = idx.slice().to_vec();
+        let index = indices[idx.slice()];
+        
+        // Handle negative indices
+        let axis_size = data.shape()[axis];
+        let normalized_index = if index < 0 {
+            (axis_size as i64 + index) as usize
+        } else {
+            index as usize
+        };
+        
+        // Replace the axis index with the gathered index
+        data_idx[axis] = normalized_index;
+        
+        // Get the value from data tensor
+        result[idx.slice()] = data[&data_idx[..]];
+    }
+    
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+
+fn op_gather_nd(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // GatherND gathers slices from a tensor at specified indices
+    let data = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GatherND requires data tensor"))?)?;
+    
+    let indices = match inputs.get(1) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data: idx_data, shape: idx_shape, .. }) => {
+            // Convert indices to a usable format
+            let concrete_shape: Vec<usize> = idx_shape.iter().map(|d| match d {
+                Dimensions::Fixed(n) => Ok(*n),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Cannot use symbolic shape for indices".into())),
+            }).collect::<Result<_, _>>()?;
+            
+            let indices_vec: Vec<i64> = idx_data.chunks(8)
+                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            
+            ArrayD::from_shape_vec(concrete_shape, indices_vec)
+                .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for indices".into()))?
+        }
+        _ => return Err(OrtError::TypeMismatch("GatherND requires Int64 indices tensor")),
+    };
+    
+    // Get batch_dims attribute
+    let batch_dims = node.attributes.iter().find(|a| a.name == "batch_dims")
+        .map(|a| a.i as usize)
+        .unwrap_or(0); // Default to 0
+    
+    // Calculate output shape
+    let indices_shape = indices.shape();
+    let data_shape = data.shape();
+    
+    let indices_rank = indices_shape.len();
+    let last_dim = indices_shape[indices_rank - 1];
+    
+    // Output shape is indices.shape[:-1] + data.shape[indices.shape[-1]:]
+    let mut output_shape = Vec::new();
+    output_shape.extend_from_slice(&indices_shape[..indices_rank - 1]);
+    output_shape.extend_from_slice(&data_shape[batch_dims + last_dim..]);
+    
+    let mut result = ArrayD::zeros(output_shape.clone());
+    
+    // Gather elements
+    for idx in ndarray::indices(&indices_shape[..indices_rank - 1]) {
+        // Get the indices for this element
+        let mut gather_indices = Vec::new();
+        for i in 0..last_dim {
+            let index = indices[&[idx.slice(), &[i]].concat()[..]];
+            
+            // Handle negative indices
+            let axis_size = data_shape[batch_dims + i];
+            let normalized_index = if index < 0 {
+                (axis_size as i64 + index) as usize
+            } else {
+                index as usize
+            };
+            
+            gather_indices.push(normalized_index);
+        }
+        
+        // Construct full index into data tensor
+        let mut data_idx = Vec::new();
+        data_idx.extend_from_slice(&idx.slice()[..batch_dims]); // Batch dimensions
+        data_idx.extend_from_slice(&gather_indices); // Gathered indices
+        
+        // Get the slice from data tensor
+        let slice = data.select(Axis(0), &data_idx);
+        
+        // Copy to result
+        let mut result_idx = idx.slice().to_vec();
+        result_idx.extend_from_slice(&[0; 0]); // Placeholder for remaining dimensions
+        
+        // This is a simplified implementation - in a real implementation, we would need to handle arbitrary slicing
+        result[&result_idx[..]] = slice[[0]];
+    }
+    
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+
+fn op_reduce_max(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // ReduceMax computes the maximum value of elements across dimensions of a tensor
+    let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("ReduceMax requires input tensor"))?)?;
+    
+    // Get axes attribute or input
+    let axes = if inputs.len() > 1 {
+        match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+            }
+            _ => return Err(OrtError::TypeMismatch("ReduceMax requires Int64 axes tensor as second input")),
+        }
+    } else {
+        node.attributes.iter().find(|a| a.name == "axes")
+            .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+            .unwrap_or_else(|| (0..input.ndim()).collect()) // Default to all axes
+    };
+    
+    // Get keepdims attribute
+    let keepdims = node.attributes.iter().find(|a| a.name == "keepdims")
+        .map(|a| a.i != 0)
+        .unwrap_or(true); // Default to true
+    
+    // Sort axes in descending order to avoid dimension issues when reducing
+    let mut sorted_axes = axes.clone();
+    sorted_axes.sort_by(|a, b| b.cmp(a));
+    
+    // Reduce along each axis
+    let mut result = input.clone();
+    for &axis in &sorted_axes {
+        result = result.map_axis(Axis(axis), |view| {
+            view.fold(f32::NEG_INFINITY, |acc, &x| acc.max(x))
+        });
+    }
+    
+    // Reshape if keepdims is true
+    if keepdims {
+        let mut new_shape = input.shape().to_vec();
+        for &axis in &axes {
+            new_shape[axis] = 1;
+        }
+        result = result.into_shape(new_shape).unwrap();
+    }
+    
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+
+fn op_attention(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Real implementation of scaled dot-product attention
+    // Inputs: query, key, value, mask (optional)
+    let query = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Attention requires query tensor"))?)?;
+    let key = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Attention requires key tensor"))?)?;
+    let value = ort_to_ndarray(inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("Attention requires value tensor"))?)?;
+    
+    // Optional mask
+    let mask = if inputs.len() > 3 {
+        Some(ort_to_ndarray(inputs.get(3).unwrap())?)
+    } else {
+        None
+    };
+    
+    // Get num_heads attribute
+    let num_heads = node.attributes.iter().find(|a| a.name == "num_heads")
+        .map(|a| a.i as usize)
+        .unwrap_or(1); // Default to 1
+    
+    // Shape validation
+    let q_shape = query.shape();
+    let k_shape = key.shape();
+    let v_shape = value.shape();
+    
+    if q_shape.len() != 4 || k_shape.len() != 4 || v_shape.len() != 4 {
+        return Err(OrtError::TypeMismatch("Attention requires 4D tensors [batch, seq_len, num_heads, head_dim]"));
+    }
+    
+    let (batch_size, q_seq_len, _, head_dim) = (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
+    let k_seq_len = k_shape[1];
+    
+    // Compute attention scores: Q * K^T / sqrt(head_dim)
+    let mut scores = Array4::zeros((batch_size, num_heads, q_seq_len, k_seq_len));
+    
+    // Scale factor for attention scores
+    let scale = (head_dim as f32).sqrt();
+    
+    // Compute scaled dot-product for each batch and head
+    for b in 0..batch_size {
+        for h in 0..num_heads {
+            // Extract query and key for current batch and head
+            let q = query.slice(ndarray::s![b, .., h, ..]);
+            let k = key.slice(ndarray::s![b, .., h, ..]);
+            
+            // Compute Q * K^T (matrix multiplication)
+            let qk = q.dot(&k.t());
+            
+            // Scale by sqrt(head_dim)
+            let scaled_qk = qk / scale;
+            
+            // Store in scores tensor
+            scores.slice_mut(ndarray::s![b, h, .., ..]).assign(&scaled_qk);
+        }
+    }
+    
+    // Apply mask if provided (for causal attention or padding)
+    if let Some(m) = mask {
+        // Apply mask to attention scores
+        for b in 0..batch_size {
+            for h in 0..num_heads {
+                for i in 0..q_seq_len {
+                    for j in 0..k_seq_len {
+                        // If mask value is 0, set score to -infinity to ensure 0 attention weight
+                        if m[[b, 0, i, j]] == 0.0 {
+                            scores[[b, h, i, j]] = f32::NEG_INFINITY;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Apply softmax to get attention weights
+    let mut attention_weights = Array4::zeros(scores.raw_dim());
+    
+    for b in 0..batch_size {
+        for h in 0..num_heads {
+            for i in 0..q_seq_len {
+                // Get row of scores for current query position
+                let row = scores.slice(ndarray::s![b, h, i, ..]);
+                
+                // Compute softmax: exp(x_i - max) / sum(exp(x_j - max))
+                // Subtract max for numerical stability
+                let max_val = row.fold(f32::NEG_INFINITY, |acc, &x| acc.max(x));
+                let exp_row: Vec<f32> = row.iter().map(|&x| (x - max_val).exp()).collect();
+                let sum_exp: f32 = exp_row.iter().sum();
+                
+                // Normalize to get probabilities
+                for (j, &exp_val) in exp_row.iter().enumerate() {
+                    attention_weights[[b, h, i, j]] = exp_val / sum_exp;
+                }
+            }
+        }
+    }
+    
+    // Compute weighted sum: attention_weights * V
+    let mut output = Array4::zeros((batch_size, q_seq_len, num_heads, head_dim));
+    
+    for b in 0..batch_size {
+        for h in 0..num_heads {
+            for i in 0..q_seq_len {
+                // Get attention weights for current query position
+                let weights = attention_weights.slice(ndarray::s![b, h, i, ..]);
+                // Get value vectors
+                let v = value.slice(ndarray::s![b, .., h, ..]);
+                
+                // Compute weighted sum for each dimension of the value vectors
+                for d in 0..head_dim {
+                    let mut sum = 0.0;
+                    for j in 0..k_seq_len {
+                        sum += weights[j] * v[[j, d]];
+                    }
+                    output[[b, i, h, d]] = sum;
+                }
+            }
+        }
+    }
+    
+    Ok(ndarray_to_ort(output.into_dyn(), DataType::Float))
+}
+// Kokoro-specific operations
+fn op_embedding(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Real implementation of embedding lookup
+    // Embedding performs a lookup in an embedding matrix using input indices
+    let indices = match inputs.get(0) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data, shape, .. }) => {
+            // Convert indices to a usable format
+            let concrete_shape: Vec<usize> = shape.iter().map(|d| match d {
+                Dimensions::Fixed(n) => Ok(*n),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Cannot use symbolic shape for indices".into())),
+            }).collect::<Result<_, _>>()?;
+            
+            let indices_vec: Vec<i64> = data.chunks(8)
+                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            
+            ArrayD::from_shape_vec(concrete_shape, indices_vec)
+                .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for indices".into()))?
+        }
+        _ => return Err(OrtError::TypeMismatch("Embedding requires Int64 indices tensor")),
+    };
+    
+    let weights = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Embedding requires weights tensor"))?)?;
+    
+    // Get embedding size
+    let weights_shape = weights.shape();
+    let vocab_size = weights_shape[0];
+    let embedding_size = weights_shape[1];
+    
+    // Create output tensor with shape [*indices_shape, embedding_size]
+    let mut output_shape = indices.shape().to_vec();
+    output_shape.push(embedding_size);
+    let mut result = ArrayD::zeros(output_shape.clone());
+    
+    // Perform embedding lookup for each index
+    for idx in ndarray::indices(indices.shape()) {
+        let index = indices[idx.slice()];
+        
+        // Handle negative indices (wrap around) and validate bounds
+        let normalized_index = if index < 0 {
+            let wrapped_index = (vocab_size as i64 + index) as usize;
+            if wrapped_index >= vocab_size {
+                return Err(OrtError::IndexError("Negative embedding index out of bounds after wrapping"));
+            }
+            wrapped_index
+        } else if index as usize >= vocab_size {
+            return Err(OrtError::IndexError("Embedding index out of bounds"));
+        } else {
+            index as usize
+        };
+        
+        // Get embedding vector for this index
+        let embedding = weights.slice(ndarray::s![normalized_index, ..]);
+        
+        // Copy embedding vector to result tensor at the correct position
+        let mut result_idx = idx.slice().to_vec();
+        result_idx.push(0); // Add dimension for embedding vector
+        
+        for i in 0..embedding_size {
+            result_idx[result_idx.len() - 1] = i;
+            result[&result_idx[..]] = embedding[i];
+        }
+    }
+    
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+
+fn op_constant_of_shape_int64(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // ConstantOfShape creates a tensor with a specified shape and filled with a constant value
+    // This version specifically handles Int64 output type for attention masks in BERT
+    
+    // Get shape from input tensor
+    let shape = match inputs.get(0) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+            data.chunks(8)
+                .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize)
+                .collect::<Vec<_>>()
+        }
+        _ => return Err(OrtError::TypeMismatch("ConstantOfShape requires Int64 shape tensor")),
+    };
+    
+    // Get value attribute (default to 0)
+    let value = node.attributes.iter()
+        .find(|a| a.name == "value")
+        .and_then(|a| a.t.as_ref())
+        .map(|t| {
+            if t.data_type == 7 { // INT64
+                if !t.int64_data.is_empty() {
+                    t.int64_data[0]
+                } else if !t.raw_data.is_empty() && t.raw_data.len() >= 8 {
+                    i64::from_le_bytes(t.raw_data[0..8].try_into().unwrap())
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0);
+    
+    // Create tensor filled with the value
+    let total_elements: usize = shape.iter().product();
+    let data: Vec<u8> = std::iter::repeat(value)
+        .take(total_elements)
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    
+    Ok(OrtValue::Tensor {
+        shape: shape.iter().map(|&d| Dimensions::Fixed(d)).collect(),
+        dtype: DataType::Int64,
+        data: Arc::new(data),
+    })
+}
+
+fn op_layer_normalization_with_epsilon(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Enhanced LayerNormalization with proper epsilon handling for BERT
+    let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("LayerNormalization requires input tensor"))?)?;
+    let scale = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("LayerNormalization requires scale tensor"))?)?;
+    let bias = inputs.get(2).map(|b| ort_to_ndarray(b)).transpose()?;
+    
+    // Get epsilon attribute with proper handling for small values
+    let epsilon = node.attributes.iter()
+        .find(|a| a.name == "epsilon")
+        .map(|a| a.f)
+        .unwrap_or(1e-5);
+    
+    // Get axis attribute (default to -1, which is the last dimension)
+    let axis = node.attributes.iter()
+        .find(|a| a.name == "axis")
+        .map(|a| {
+            if a.i < 0 {
+                (array.ndim() as i64 + a.i) as usize
+            } else {
+                a.i as usize
+            }
+        })
+        .unwrap_or(array.ndim() - 1);
+    
+    // Calculate mean along the specified axis
+    let mean = array.mean_axis(Axis(axis))
+        .ok_or_else(|| OrtError::InvalidTensorData("LayerNormalization mean error".into()))?;
+    
+    // Calculate variance along the specified axis
+    let var = array.mapv(|x| x * x)
+        .mean_axis(Axis(axis))
+        .ok_or_else(|| OrtError::InvalidTensorData("LayerNormalization variance error".into()))?
+        .mapv(|x| x - mean.mapv(|m| m * m));
+    
+    // Normalize the input
+    let mut result = array.clone();
+    
+    // Apply normalization for each element
+    for idx in ndarray::indices(array.shape()) {
+        let mut mean_idx = idx.slice().to_vec();
+        mean_idx.remove(axis);
+        
+        let m = mean[&mean_idx[..]];
+        let v = var[&mean_idx[..]] + epsilon;
+        
+        let yui = (array[idx.slice()] - m) / v.sqrt();
+        result[idx.slice()] = yui;
+    }
+    
+    // Apply scale and bias
+    if scale.ndim() > 0 {
+        for idx in ndarray::indices(result.shape()) {
+            let mut scale_idx = vec![0; scale.ndim()];
+            for (i, &dim) in idx.slice()[axis..].iter().enumerate() {
+                if i < scale_idx.len() {
+                    scale_idx[i] = dim;
+                }
+            }
+            
+            result[idx.slice()] *= scale[&scale_idx[..]];
+            
+            if let Some(ref b) = bias {
+                result[idx.slice()] += b[&scale_idx[..]];
+            }
+        }
+    }
+    
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+
+
+fn op_position_embeddings(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Position embeddings for BERT - adds position information to token embeddings
+    let token_embeddings = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("PositionEmbeddings requires token embeddings tensor"))?)?;
+    
+    // Get position embeddings from input or attribute
+    let position_embeddings = if inputs.len() > 1 {
+        ort_to_ndarray(inputs.get(1).unwrap())?
+    } else {
+        // If not provided as input, use attribute
+        let position_embedding_attr = node.attributes.iter()
+            .find(|a| a.name == "position_embeddings")
+            .and_then(|a| a.t.as_ref())
+            .ok_or_else(|| OrtError::InvalidTensorData("PositionEmbeddings requires position_embeddings attribute".into()))?;
+        
+        // Convert tensor proto to ndarray
+        let shape: Vec<usize> = position_embedding_attr.dims.iter().map(|&d| d as usize).collect();
+        let data: Vec<f32> = if !position_embedding_attr.float_data.is_empty() {
+            position_embedding_attr.float_data.clone()
+        } else if !position_embedding_attr.raw_data.is_empty() {
+            position_embedding_attr.raw_data.chunks(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect()
+        } else {
+            return Err(OrtError::InvalidTensorData("Position embeddings tensor has no data".into()));
+        };
+        
+        ArrayD::from_shape_vec(shape, data)
+            .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for position embeddings".into()))?
+    };
+    
+    // Get max sequence length
+    let token_shape = token_embeddings.shape();
+    let seq_length = token_shape[1]; // Assuming shape is [batch_size, seq_length, hidden_size]
+    
+    // Add position embeddings to token embeddings
+    let mut result = token_embeddings.clone();
+    
+    for b in 0..token_shape[0] {
+        for pos in 0..seq_length {
+            for h in 0..token_shape[2] {
+                result[[b, pos, h]] += position_embeddings[[pos, h]];
+            }
+        }
+    }
+    
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+
+fn op_token_type_embeddings(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Token type embeddings for BERT - adds token type information to embeddings
+    let embeddings = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("TokenTypeEmbeddings requires embeddings tensor"))?)?;
+    
+    // Get token type ids
+    let token_type_ids = match inputs.get(1) {
+        Some(OrtValue::Tensor { dtype: DataType::Int64, data, shape, .. }) => {
+            // Convert token type ids to a usable format
+            let concrete_shape: Vec<usize> = shape.iter().map(|d| match d {
+                Dimensions::Fixed(n) => Ok(*n),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Cannot use symbolic shape for token type ids".into())),
+            }).collect::<Result<_, _>>()?;
+            
+            let ids_vec: Vec<i64> = data.chunks(8)
+                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            
+            ArrayD::from_shape_vec(concrete_shape, ids_vec)
+                .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for token type ids".into()))?
+        }
+        _ => return Err(OrtError::TypeMismatch("TokenTypeEmbeddings requires Int64 token type ids tensor")),
+    };
+    
+    // Get token type embeddings
+    let token_type_embeddings = ort_to_ndarray(inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("TokenTypeEmbeddings requires token type embeddings tensor"))?)?;
+    
+    // Add token type embeddings to input embeddings
+    let mut result = embeddings.clone();
+    
+    let emb_shape = embeddings.shape();
+    let hidden_size = emb_shape[2]; // Assuming shape is [batch_size, seq_length, hidden_size]
+    
+    for b in 0..emb_shape[0] {
+        for pos in 0..emb_shape[1] {
+            let token_type = token_type_ids[[b, pos]] as usize;
+            for h in 0..hidden_size {
+                result[[b, pos, h]] += token_type_embeddings[[token_type, h]];
+            }
+        }
+    }
+    
+    Ok(ndarray_to_ort(result, DataType::Float))
+}
+
+fn op_bert_attention(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // BERT-specific attention implementation
+    let hidden_states = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("BertAttention requires hidden states tensor"))?)?;
+    
+    // Get attention mask (optional)
+    let attention_mask = if inputs.len() > 1 {
+        Some(ort_to_ndarray(inputs.get(1).unwrap())?)
+    } else {
+        None
+    };
+    
+    // Get query, key, value weights
+    let query_weight = ort_to_ndarray(inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("BertAttention requires query weight tensor"))?)?;
+    let key_weight = ort_to_ndarray(inputs.get(3).ok_or_else(|| OrtError::TypeMismatch("BertAttention requires key weight tensor"))?)?;
+    let value_weight = ort_to_ndarray(inputs.get(4).ok_or_else(|| OrtError::TypeMismatch("BertAttention requires value weight tensor"))?)?;
+    
+    // Get query, key, value biases (optional)
+    let query_bias = if inputs.len() > 5 { Some(ort_to_ndarray(inputs.get(5).unwrap())?) } else { None };
+    let key_bias = if inputs.len() > 6 { Some(ort_to_ndarray(inputs.get(6).unwrap())?) } else { None };
+    let value_bias = if inputs.len() > 7 { Some(ort_to_ndarray(inputs.get(7).unwrap())?) } else { None };
+    
+    // Get attributes
+    let num_heads = node.attributes.iter().find(|a| a.name == "num_attention_heads")
+        .map(|a| a.i as usize)
+        .unwrap_or(12); // Default for BERT-base
+    
+    let hidden_size = hidden_states.shape()[2];
+    let attention_head_size = hidden_size / num_heads;
+    let batch_size = hidden_states.shape()[0];
+    let seq_length = hidden_states.shape()[1];
+    
+    // Compute query, key, value projections
+    let mut query = Array3::zeros((batch_size, seq_length, hidden_size));
+    let mut key = Array3::zeros((batch_size, seq_length, hidden_size));
+    let mut value = Array3::zeros((batch_size, seq_length, hidden_size));
+    
+    // Simplified matrix multiplication for projections
+    for b in 0..batch_size {
+        for s in 0..seq_length {
+            // Query projection
+            for i in 0..hidden_size {
+                let mut sum = 0.0;
+                for j in 0..hidden_size {
+                    sum += hidden_states[[b, s, j]] * query_weight[[j, i]];
+                }
+                if let Some(ref bias) = query_bias {
+                    sum += bias[[i]];
+                }
+                query[[b, s, i]] = sum;
+            }
+            
+            // Key projection
+            for i in 0..hidden_size {
+                let mut sum = 0.0;
+                for j in 0..hidden_size {
+                    sum += hidden_states[[b, s, j]] * key_weight[[j, i]];
+                }
+                if let Some(ref bias) = key_bias {
+                    sum += bias[[i]];
+                }
+                key[[b, s, i]] = sum;
+            }
+            
+            // Value projection
+            for i in 0..hidden_size {
+                let mut sum = 0.0;
+                for j in 0..hidden_size {
+                    sum += hidden_states[[b, s, j]] * value_weight[[j, i]];
+                }
+                if let Some(ref bias) = value_bias {
+                    sum += bias[[i]];
+                }
+                value[[b, s, i]] = sum;
+            }
+        }
+    }
+    
+    // Reshape to [batch_size, seq_length, num_heads, attention_head_size]
+    let mut query_reshaped = Array4::zeros((batch_size, seq_length, num_heads, attention_head_size));
+    let mut key_reshaped = Array4::zeros((batch_size, seq_length, num_heads, attention_head_size));
+    let mut value_reshaped = Array4::zeros((batch_size, seq_length, num_heads, attention_head_size));
+    
+    for b in 0..batch_size {
+        for s in 0..seq_length {
+            for h in 0..num_heads {
+                for d in 0..attention_head_size {
+                    let idx = h * attention_head_size + d;
+                    query_reshaped[[b, s, h, d]] = query[[b, s, idx]];
+                    key_reshaped[[b, s, h, d]] = key[[b, s, idx]];
+                    value_reshaped[[b, s, h, d]] = value[[b, s, idx]];
+                }
+            }
+        }
+    }
+    
+    // Transpose key for matrix multiplication: [batch_size, num_heads, seq_length, attention_head_size]
+    let mut key_transposed = Array4::zeros((batch_size, num_heads, seq_length, attention_head_size));
+    for b in 0..batch_size {
+        for h in 0..num_heads {
+            for s in 0..seq_length {
+                for d in 0..attention_head_size {
+                    key_transposed[[b, h, s, d]] = key_reshaped[[b, s, h, d]];
+                }
+            }
+        }
+    }
+    
+    // Compute attention scores: [batch_size, num_heads, seq_length, seq_length]
+    let mut attention_scores = Array4::zeros((batch_size, num_heads, seq_length, seq_length));
+    
+    for b in 0..batch_size {
+        for h in 0..num_heads {
+            for q_seq in 0..seq_length {
+                for k_seq in 0..seq_length {
+                    let mut score = 0.0;
+                    for d in 0..attention_head_size {
+                        score += query_reshaped[[b, q_seq, h, d]] * key_transposed[[b, h, k_seq, d]];
+                    }
+                    attention_scores[[b, h, q_seq, k_seq]] = score / (attention_head_size as f32).sqrt();
+                }
+            }
+        }
+    }
+    
+    // Apply attention mask if provided
+    if let Some(mask) = attention_mask {
+        for b in 0..batch_size {
+            for h in 0..num_heads {
+                for q_seq in 0..seq_length {
+                    for k_seq in 0..seq_length {
+                        if mask[[b, k_seq]] == 0.0 {
+                            attention_scores[[b, h, q_seq, k_seq]] = f32::NEG_INFINITY;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Apply softmax to get attention probabilities
+    let mut attention_probs = Array4::zeros(attention_scores.raw_dim());
+    
+    for b in 0..batch_size {
+        for h in 0..num_heads {
+            for q_seq in 0..seq_length {
+                // Find max for numerical stability
+                let mut max_val = f32::NEG_INFINITY;
+                for k_seq in 0..seq_length {
+                    max_val = max_val.max(attention_scores[[b, h, q_seq, k_seq]]);
+                }
+                
+                // Compute softmax: exp(x_i - max) / sum(exp(x_j - max))
+                let mut sum_exp = 0.0;
+                for k_seq in 0..seq_length {
+                    sum_exp += (attention_scores[[b, h, q_seq, k_seq]] - max_val).exp();
+                }
+                
+                for k_seq in 0..seq_length {
+                    attention_probs[[b, h, q_seq, k_seq]] = 
+                        (attention_scores[[b, h, q_seq, k_seq]] - max_val).exp() / sum_exp;
+                }
+            }
+        }
+    }
+    
+    // Apply attention to values
+    let mut context = Array4::zeros((batch_size, seq_length, num_heads, attention_head_size));
+    
+    for b in 0..batch_size {
+        for h in 0..num_heads {
+            for q_seq in 0..seq_length {
+                for d in 0..attention_head_size {
+                    let mut sum = 0.0;
+                    for k_seq in 0..seq_length {
+                        sum += attention_probs[[b, h, q_seq, k_seq]] * value_reshaped[[b, k_seq, h, d]];
+                    }
+                    context[[b, q_seq, h, d]] = sum;
+                }
+            }
+        }
+    }
+    
+    // Reshape back to [batch_size, seq_length, hidden_size]
+    let mut result = Array3::zeros((batch_size, seq_length, hidden_size));
+    
+    for b in 0..batch_size {
+        for s in 0..seq_length {
+            for h in 0..num_heads {
+                for d in 0..attention_head_size {
+                    let idx = h * attention_head_size + d;
+                    result[[b, s, idx]] = context[[b, s, h, d]];
+                }
+            }
+        }
+    }
+    
+    Ok(ndarray_to_ort(result.into_dyn(), DataType::Float))
+}
+
+fn op_bert_intermediate(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // BERT intermediate layer with GELU activation
+    let hidden_states = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("BertIntermediate requires hidden states tensor"))?)?;
+    let weights = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("BertIntermediate requires weights tensor"))?)?;
+    
+    // Get bias (optional)
+    let bias = if inputs.len() > 2 {
+        Some(ort_to_ndarray(inputs.get(2).unwrap())?)
+    } else {
+        None
+    };
+    
+    // Get hidden size and intermediate size
+    let hidden_shape = hidden_states.shape();
+    let batch_size = hidden_shape[0];
+    let seq_length = hidden_shape[1];
+    let hidden_size = hidden_shape[2];
+    
+    let weights_shape = weights.shape();
+    let intermediate_size = weights_shape[0];
+    
+    // Compute intermediate output
+    let mut intermediate_output = Array3::zeros((batch_size, seq_length, intermediate_size));
+    
+    // Linear projection
+    for b in 0..batch_size {
+        for s in 0..seq_length {
+            for i in 0..intermediate_size {
+                let mut sum = 0.0;
+                for j in 0..hidden_size {
+                    sum += hidden_states[[b, s, j]] * weights[[i, j]];
+                }
+                if let Some(ref b) = bias {
+                    sum += b[[i]];
+                }
+                intermediate_output[[b, s, i]] = sum;
+            }
+        }
+    }
+    
+    // Apply GELU activation
+    let result = intermediate_output.mapv(|x| {
+        // Constants for erf approximation
+        let a1 = 0.254829592;
+        let a2 = -0.284496736;
+        let a3 = 1.421413741;
+        let a4 = -1.453152027;
+        let a5 = 1.061405429;
+        let p = 0.3275911;
+        
+        // Calculate x / sqrt(2)
+        let x_scaled = x / 1.4142135623730951;
+        
+        // Save the sign of x_scaled
+        let sign = if x_scaled < 0.0 { -1.0 } else { 1.0 };
+        let x_abs = x_scaled.abs();
+        
+        // A&S formula 7.1.26 for erf
+        let t = 1.0 / (1.0 + p * x_abs);
+        let erf = sign * (1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x_abs * x_abs).exp());
+        
+        // GELU formula
+        0.5 * x * (1.0 + erf)
+    });
+    
+    Ok(ndarray_to_ort(result.into_dyn(), DataType::Float))
+}
+
+fn op_bert_output(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // BERT output layer with residual connection and layer normalization
+    let hidden_states = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("BertOutput requires hidden states tensor"))?)?;
+    let input_tensor = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("BertOutput requires input tensor"))?)?;
+    let weights = ort_to_ndarray(inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("BertOutput requires weights tensor"))?)?;
+    
+    // Get bias (optional)
+    let bias = if inputs.len() > 3 {
+        Some(ort_to_ndarray(inputs.get(3).unwrap())?)
+    } else {
+        None
+    };
+    
+    // Get layer norm weights and bias
+    let layer_norm_weight = ort_to_ndarray(inputs.get(4).ok_or_else(|| OrtError::TypeMismatch("BertOutput requires layer norm weight tensor"))?)?;
+    let layer_norm_bias = if inputs.len() > 5 {
+        Some(ort_to_ndarray(inputs.get(5).unwrap())?)
+    } else {
+        None
+    };
+    
+    // Get hidden size
+    let hidden_shape = hidden_states.shape();
+    let batch_size = hidden_shape[0];
+    let seq_length = hidden_shape[1];
+    let intermediate_size = hidden_shape[2];
+    
+    let weights_shape = weights.shape();
+    let hidden_size = weights_shape[0];
+    
+    // Compute output
+    let mut output = Array3::zeros((batch_size, seq_length, hidden_size));
+    
+    // Linear projection
+    for b in 0..batch_size {
+        for s in 0..seq_length {
+            for i in 0..hidden_size {
+                let mut sum = 0.0;
+                for j in 0..intermediate_size {
+                    sum += hidden_states[[b, s, j]] * weights[[i, j]];
+                }
+                if let Some(ref b) = bias {
+                    sum += b[[i]];
+                }
+                output[[b, s, i]] = sum;
+            }
+        }
+    }
+    
+    // Add residual connection
+    for b in 0..batch_size {
+        for s in 0..seq_length {
+            for i in 0..hidden_size {
+                output[[b, s, i]] += input_tensor[[b, s, i]];
+            }
+        }
+    }
+    
+    // Apply layer normalization
+    let mut result = output.clone();
+    
+    // For each token, normalize across hidden dimension
+    for b in 0..batch_size {
+        for s in 0..seq_length {
+            // Compute mean
+            let mut mean = 0.0;
+            for i in 0..hidden_size {
+                mean += output[[b, s, i]];
+            }
+            mean /= hidden_size as f32;
+            
+            // Compute variance
+            let mut var = 0.0;
+            for i in 0..hidden_size {
+                var += (output[[b, s, i]] - mean).powi(2);
+            }
+            var /= hidden_size as f32;
+            
+            // Normalize, scale, and shift
+            for i in 0..hidden_size {
+                let normalized = (output[[b, s, i]] - mean) / (var + 1e-12).sqrt();
+                result[[b, s, i]] = normalized * layer_norm_weight[[i]];
+                if let Some(ref bias) = layer_norm_bias {
+                    result[[b, s, i]] += bias[[i]];
+                }
+            }
+        }
+    }
+    
+    Ok(ndarray_to_ort(result.into_dyn(), DataType::Float))
+}
+
+fn op_bert_pooler(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // BERT pooler for sentence representation
+    let hidden_states = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("BertPooler requires hidden states tensor"))?)?;
+    let weights = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("BertPooler requires weights tensor"))?)?;
+    
+    // Get bias (optional)
+    let bias = if inputs.len() > 2 {
+        Some(ort_to_ndarray(inputs.get(2).unwrap())?)
+    } else {
+        None
+    };
+    
+    // Get hidden size
+    let hidden_shape = hidden_states.shape();
+    let batch_size = hidden_shape[0];
+    let hidden_size = hidden_shape[2];
+    
+    // Extract first token ([CLS]) representation
+    let mut first_token = Array2::zeros((batch_size, hidden_size));
+    for b in 0..batch_size {
+        for i in 0..hidden_size {
+            first_token[[b, i]] = hidden_states[[b, 0, i]];
+        }
+    }
+    
+    // Apply linear transformation
+    let mut pooled_output = Array2::zeros((batch_size, hidden_size));
+    
+    for b in 0..batch_size {
+        for i in 0..hidden_size {
+            let mut sum = 0.0;
+            for j in 0..hidden_size {
+                sum += first_token[[b, j]] * weights[[i, j]];
+            }
+            if let Some(ref b) = bias {
+                sum += b[[i]];
+            }
+            pooled_output[[b, i]] = sum;
+        }
+    }
+    
+    // Apply tanh activation
+    let result = pooled_output.mapv(|x| x.tanh());
+    
+    Ok(ndarray_to_ort(result.into_dyn(), DataType::Float))
+}
     fn op_gemm(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     let alpha = node.attributes.iter().find(|a| a.name == "alpha").map(|a| a.f).unwrap_or(1.0);
     let beta = node.attributes.iter().find(|a| a.name == "beta").map(|a| a.f).unwrap_or(1.0);
@@ -2400,15 +4117,61 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
 
 
     fn op_layer_normalization(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Real implementation of Layer Normalization
+        // Get epsilon parameter (small constant for numerical stability)
         let epsilon = node.attributes.iter().find(|a| a.name == "epsilon").map(|a| a.f).unwrap_or(1e-5);
+        
+        // Get input tensor, scale, and optional bias
         let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("LayerNormalization requires input tensor"))?)?;
         let scale = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("LayerNormalization requires scale tensor"))?)?;
         let bias = inputs.get(2).map(|b| ort_to_ndarray(b)).transpose()?;
+        
+        // Compute mean along the last dimension (normalization axis)
         let mean = array.mean_axis(Axis(array.ndim() - 1))
-            .ok_or_else(|| OrtError::InvalidTensorData("LayerNormalization mean error".into()))?;
-        let var = array.var_axis(Axis(array.ndim() - 1), 0.0);
-        let result = (array - mean) / (var + epsilon).mapv(|v| v.sqrt()) * scale;
-        let result = if let Some(b) = bias { result + b } else { result };
+            .ok_or_else(|| OrtError::InvalidTensorData("LayerNormalization mean calculation error".into()))?;
+        
+        // Compute variance along the last dimension
+        // First, calculate squared differences from mean
+        let mut var = Array::zeros(mean.raw_dim());
+        for idx in ndarray::indices(mean.shape()) {
+            let mut sum_squared_diff = 0.0;
+            let mut count = 0;
+            
+            // Iterate over the last dimension
+            for i in 0..array.shape()[array.ndim() - 1] {
+                let mut full_idx = idx.slice().to_vec();
+                full_idx.push(i);
+                
+                let diff = array[&full_idx[..]] - mean[&idx.slice()];
+                sum_squared_diff += diff * diff;
+                count += 1;
+            }
+            
+            // Calculate variance
+            var[&idx.slice()] = sum_squared_diff / count as f32;
+        }
+        
+        // Normalize the input: (x - mean) / sqrt(var + epsilon)
+        let mut result = ArrayD::zeros(array.raw_dim());
+        
+        for idx in ndarray::indices(array.shape()) {
+            let last_dim = idx[array.ndim() - 1];
+            let mut mean_idx = idx.slice().to_vec();
+            mean_idx.pop(); // Remove last dimension for mean/var indexing
+            
+            // Normalize
+            let normalized = (array[&idx.slice()] - mean[&mean_idx[..]]) / 
+                             (var[&mean_idx[..]] + epsilon).sqrt();
+            
+            // Scale and shift
+            result[&idx.slice()] = normalized * scale[last_dim];
+            
+            // Add bias if provided
+            if let Some(ref b) = bias {
+                result[&idx.slice()] += b[last_dim];
+            }
+        }
+        
         Ok(ndarray_to_ort(result, DataType::Float))
     }
 
@@ -2449,7 +4212,7 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     Ok(ndarray_to_ort(result, DataType::Float))
 }
 
-fn op_if(&self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+fn op_if(&self, node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let condition = match inputs.get(0) {
             Some(OrtValue::Tensor { dtype: DataType::Float, data, .. }) => {
                 let value = f32::from_le_bytes(data[..4].try_into().unwrap());
@@ -2561,7 +4324,9 @@ fn op_if(&self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     }
 }
 
-    fn op_scan(self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+
+    
+    fn op_scan(&self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let body = node.attributes.iter().find(|a| a.name == "body")
             .and_then(|a| a.g.as_ref())
             .ok_or_else(|| OrtError::InvalidTensorData("Scan requires body subgraph".into()))?;
@@ -2644,8 +4409,22 @@ fn op_if(&self,node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
 
         let output = if let Some(op) = self.node_registry.get(&node.op_type) {
             op(node, &node_inputs)?
-        } else {
-            return Err(OrtError::UnsupportedOp(node.op_type.clone()));
+        } else if(node.op_type=="If"){
+            (self.op_if(node,&node_inputs)?)
+        }
+        else if(node.op_type=="Loop"){
+            (self.op_loop(node,&node_inputs)?)
+        }
+        else if(node.op_type=="Scan"){
+            (self.op_scan(node,&node_inputs)?)
+        }
+        else{
+        //     self.node_registry.insert("If".into(), Self::op_if);
+        
+        // self.node_registry.insert("Loop".into(), Self::op_loop);
+        // self.node_registry.insert("Scan".into(), Self::op_scan);
+
+                return Err(OrtError::UnsupportedOp(node.op_type.clone()));
         };
         tensor_map.insert(node.output[0].clone(), output);
     }
@@ -2826,33 +4605,117 @@ fn parse_int64_data(proto: &TensorProto, count: usize) -> OrtResult<Vec<u8>> {
 }
 
 fn main() -> Result<()> {
-     OrtEngine::print_model_info("/root/github/Kokoros/checkpoints/kokoro-v1.0.onnx")?;
-    // let engine = OrtEngine::new("/root/github/Kokoros/checkpoints/kokoro-v1.0.onnx")?;
-    // let input_data1: Vec<i64> = (0..128).collect();
-    // let input_data2: Vec<i64> = (128..256).collect();
+     OrtEngine::print_model_info("./kokoro-v1.0.onnx")?;
+    let engine = OrtEngine::new("./kokoro-v1.0.onnx")?;
+let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
+    let mut voices = HashMap::new();
 
-    // let tokens = vec![
-    //     OrtValue::Tensor {
-    //         shape: vec![1, 128],
-    //         dtype: DataType::Int64,
-    //         data: Arc::new(
-    //             input_data1
-    //                 .iter()
-    //                 .flat_map(|x| x.to_le_bytes())
-    //                 .collect::<Vec<u8>>(),
-    //         ),
-    //     },
-    //     OrtValue::Tensor {
-    //         shape: vec![1, 128],
-    //         dtype: DataType::Int64,
-    //         data: Arc::new(
-    //             input_data2
-    //                 .iter()
-    //                 .flat_map(|x| x.to_le_bytes())
-    //                 .collect::<Vec<u8>>(),
-    //         ),
-    //     },
-    // ];
+    for voice in npz.names().unwrap() {
+        let voice_data: Result<Array3<f32>, _> = npz.by_name(&voice);
+        if let Ok(voice_data) = voice_data {
+            voices.insert(voice, voice_data);
+        }
+    }
+
+    let sorted_voices = {
+        let mut voice_names = voices.keys().cloned().collect::<Vec<_>>();
+        voice_names.sort();
+        voice_names
+    };
+
+    println!("Loaded {} voices: {:?}", voices.len(), sorted_voices);
+    // Example input data
+    let tokens: Vec<Vec<i64>> = vec![vec![0, 50, 156, 43, 102, 4, 0]]; // [1, 7]
+    let speed: f32 = 1.0;
+
+    // Create tokens tensor
+    let batch_size = tokens.len();
+    let sequence_length = tokens[0].len();
+    let tokens_flat: Vec<i64> = tokens.clone().into_iter().flatten().collect();
+    let tokens_tensor = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(sequence_length)],
+        dtype: DataType::Int64,
+        data: Arc::new(
+            tokens_flat
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        ),
+    };
+
+    // Create speed tensor
+    let speed_tensor = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(speed.to_le_bytes().to_vec()),
+    };
+
+    // Parse style string and blend styles
+    let style_str = "af_sarah.4+af_nicole.6";
+    let styles: Vec<&str> = style_str.split('+').collect();
+
+    let mut style_names = Vec::new();
+    let mut style_portions = Vec::new();
+
+    // Parse style names and portions
+    for style in styles {
+        if let Some((name, portion)) = style.split_once('.') {
+            if let Ok(portion) = portion.parse::<f32>() {
+                style_names.push(name);
+                style_portions.push(portion * 0.1); // Scale portion to 0.0-1.0 range
+            }
+        }
+    }
+    println!("Using styles: {:?}, portions: {:?}", style_names, style_portions);
+
+    // Initialize blended_style as a 1x256 tensor
+    let mut blended_style = vec![vec![0.0; 256]; 1];
+
+    // Blend styles from the voices map
+    for (name, portion) in style_names.iter().zip(style_portions.iter()) {
+        if let Some(voice_data) = voices.get(*name) {
+            // Get the style vector for the first token position
+            let style_slice = voice_data.slice(ndarray::s![0, 0, ..]);
+            for j in 0..256 {
+                blended_style[0][j] += style_slice[j] * portion;
+            }
+        } else {
+            println!("Warning: style {} not found in voices", name);
+        }
+    }
+
+    // Convert blended_style to raw bytes for OrtValue::Tensor
+    let flat_data: Vec<f32> = blended_style.into_iter().flatten().collect();
+    let data_bytes: Vec<u8> = flat_data
+        .into_iter()
+        .flat_map(|x| x.to_le_bytes().to_vec())
+        .collect();
+
+    // Create the style tensor
+    let style_tensor = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(256)], // Shape [1, 256]
+        dtype: DataType::Float,
+        data: Arc::new(data_bytes),
+    };
+
+    // Create input HashMap
+    let mut inputs = HashMap::new();
+    inputs.insert("tokens".to_string(), tokens_tensor);
+    inputs.insert("style".to_string(), style_tensor);
+    inputs.insert("speed".to_string(), speed_tensor);
+
+    // Run inference
+    println!("Running inference...");
+    let outputs = engine.infer(inputs)?;
+    
+    // Process outputs
+    println!("Inference complete. Outputs:");
+    for (name, value) in &outputs {
+        println!("  - {}: {:?}", name, value);
+    }
+    
+    Ok(())
+}
 // Create a tensor directly instead of a sequence
     // Example input data
 //     let tokens: Vec<Vec<i64>> = vec![vec![0, 50, 156, 43, 102, 4, 0]]; // [1, 7]
@@ -3016,1014 +4879,7 @@ fn main() -> Result<()> {
 //         Some(_) => println!("Error: 'predictions' output is not a Map"),
 //         None => println!("Error: 'predictions' output not found"),
 //     }
-    Ok(())
-} 
+//     Ok(())
+// } 
    // Sequence Operators Implementation
-    fn op_sequence_at(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // SequenceAt extracts a tensor from a sequence at a given position
-        let sequence = match inputs.get(0) {
-            Some(OrtValue::Sequence(seq)) => seq,
-            _ => return Err(OrtError::TypeMismatch("SequenceAt requires a sequence as first input")),
-        };
-        
-        let position = match inputs.get(1) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                i64::from_le_bytes(data[..8].try_into().unwrap())
-            },
-            _ => return Err(OrtError::TypeMismatch("SequenceAt requires an Int64 position tensor as second input")),
-        };
-        
-        let pos = if position < 0 {
-            (sequence.len() as i64 + position) as usize
-        } else {
-            position as usize
-        };
-        
-        if pos >= sequence.len() {
-            return Err(OrtError::IndexError("Position out of bounds in SequenceAt"));
-        }
-        
-        Ok(sequence[pos].clone())
-    }
-    
-    fn op_sequence_construct(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // SequenceConstruct creates a sequence from input tensors
-        if inputs.is_empty() {
-            return Err(OrtError::InvalidTensorData("SequenceConstruct requires at least one input tensor".into()));
-        }
-        
-        Ok(OrtValue::Sequence(inputs.to_vec()))
-    }
-    
-    fn op_sequence_empty(node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // SequenceEmpty creates an empty sequence
-        // Optional attribute 'dtype' specifies the element type (not used in this implementation)
-        let _dtype = node.attributes.iter()
-            .find(|a| a.name == "dtype")
-            .map(|a| a.i)
-            .unwrap_or(1); // Default to float
-            
-        Ok(OrtValue::Sequence(Vec::new()))
-    }
-    
-    fn op_sequence_erase(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // SequenceErase removes a tensor from a sequence at a given position
-        let sequence = match inputs.get(0) {
-            Some(OrtValue::Sequence(seq)) => seq.clone(),
-            _ => return Err(OrtError::TypeMismatch("SequenceErase requires a sequence as first input")),
-        };
-        
-        let position = match inputs.get(1) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                i64::from_le_bytes(data[..8].try_into().unwrap())
-            },
-            _ => return Err(OrtError::TypeMismatch("SequenceErase requires an Int64 position tensor as second input")),
-        };
-        
-        let pos = if position < 0 {
-            (sequence.len() as i64 + position) as usize
-        } else {
-            position as usize
-        };
-        
-        if pos >= sequence.len() {
-            return Err(OrtError::IndexError("Position out of bounds in SequenceErase"));
-        }
-        
-        let mut result = sequence.clone();
-        result.remove(pos);
-        
-        Ok(OrtValue::Sequence(result))
-    }
-    
-    fn op_sequence_insert(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // SequenceInsert inserts a tensor into a sequence at a given position
-        let sequence = match inputs.get(0) {
-            Some(OrtValue::Sequence(seq)) => seq.clone(),
-            _ => return Err(OrtError::TypeMismatch("SequenceInsert requires a sequence as first input")),
-        };
-        
-        let tensor = match inputs.get(1) {
-            Some(tensor) => tensor.clone(),
-            _ => return Err(OrtError::TypeMismatch("SequenceInsert requires a tensor as second input")),
-        };
-        
-        let position = if inputs.len() > 2 {
-            match inputs.get(2) {
-                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                    i64::from_le_bytes(data[..8].try_into().unwrap())
-                },
-                _ => return Err(OrtError::TypeMismatch("SequenceInsert requires an Int64 position tensor as third input")),
-            }
-        } else {
-            sequence.len() as i64 // Default to append
-        };
-        
-        let pos = if position < 0 {
-            (sequence.len() as i64 + position) as usize
-        } else {
-            position as usize
-        };
-        
-        if pos > sequence.len() {
-            return Err(OrtError::IndexError("Position out of bounds in SequenceInsert"));
-        }
-        
-        let mut result = sequence.clone();
-        result.insert(pos, tensor);
-        
-        Ok(OrtValue::Sequence(result))
-    }
-    
-    fn op_sequence_length(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // SequenceLength returns the length of a sequence
-        let sequence = match inputs.get(0) {
-            Some(OrtValue::Sequence(seq)) => seq,
-            _ => return Err(OrtError::TypeMismatch("SequenceLength requires a sequence as input")),
-        };
-        
-        let length = sequence.len() as i64;
-        let data = length.to_le_bytes().to_vec();
-        
-        Ok(OrtValue::Tensor {
-            shape: vec![Dimensions::Fixed(1)],
-            dtype: DataType::Int64,
-            data: Arc::new(data),
-        })
-    }
-    
-    // Map Operators Implementation
-    fn op_map_from_tensor(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // MapFromTensor creates a map from key and value tensors
-        let keys = match inputs.get(0) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                data.chunks(8).map(|c| MapKey::Int64(i64::from_le_bytes(c.try_into().unwrap()))).collect::<Vec<_>>()
-            },
-            Some(OrtValue::Tensor { dtype: DataType::String, data, .. }) => {
-                // Simple implementation - assumes each 8 bytes is a string length followed by string data
-                let mut keys = Vec::new();
-                let mut i = 0;
-                while i < data.len() {
-                    let len = u64::from_le_bytes(data[i..i+8].try_into().unwrap()) as usize;
-                    i += 8;
-                    if i + len > data.len() {
-                        break;
-                    }
-                    let s = String::from_utf8_lossy(&data[i..i+len]).to_string();
-                    keys.push(MapKey::String(s));
-                    i += len;
-                }
-                keys
-            },
-            _ => return Err(OrtError::TypeMismatch("MapFromTensor requires keys tensor as first input")),
-        };
-        
-        let values = match inputs.get(1) {
-            Some(value_tensor @ OrtValue::Tensor { .. }) => {
-                // For simplicity, we'll assume the values tensor can be split evenly among the keys
-                let shape = value_tensor.shape();
-                if shape.is_empty() {
-                    return Err(OrtError::InvalidTensorData("Values tensor must have at least one dimension".into()));
-                }
-                
-                // Extract values based on the first dimension
-                let mut values = Vec::new();
-                // This is a simplified implementation - in a real implementation, we would need to split the tensor properly
-                values.push(value_tensor.clone());
-                values
-            },
-            _ => return Err(OrtError::TypeMismatch("MapFromTensor requires values tensor as second input")),
-        };
-        
-        if keys.len() != values.len() {
-            return Err(OrtError::InvalidTensorData(format!(
-                "Number of keys ({}) must match number of values ({})",
-                keys.len(), values.len()
-            )));
-        }
-        
-        let mut map = IndexMap::new();
-        for (key, value) in keys.into_iter().zip(values.into_iter()) {
-            map.insert(key, value);
-        }
-        
-        Ok(OrtValue::Map(map))
-    }
-    
-    fn op_map_to_tensor(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // MapToTensor converts a map to key and value tensors
-        let map = match inputs.get(0) {
-            Some(OrtValue::Map(map)) => map,
-            _ => return Err(OrtError::TypeMismatch("MapToTensor requires a map as input")),
-        };
-        
-        // Extract keys
-        let keys: Vec<_> = map.keys().collect();
-        
-        // Create key tensor
-        let key_tensor = match keys.first() {
-            Some(MapKey::Int64(_)) => {
-                let data: Vec<u8> = keys.iter().flat_map(|k| {
-                    if let MapKey::Int64(i) = k {
-                        i.to_le_bytes().to_vec()
-                    } else {
-                        vec![] // Should not happen if all keys are the same type
-                    }
-                }).collect();
-                
-                OrtValue::Tensor {
-                    shape: vec![Dimensions::Fixed(keys.len())],
-                    dtype: DataType::Int64,
-                    data: Arc::new(data),
-                }
-            },
-            Some(MapKey::String(_)) => {
-                // Simple implementation - concatenate all strings with their lengths
-                let mut data = Vec::new();
-                for k in keys {
-                    if let MapKey::String(s) = k {
-                        let bytes = s.as_bytes();
-                        let len = bytes.len() as u64;
-                        data.extend_from_slice(&len.to_le_bytes());
-                        data.extend_from_slice(bytes);
-                    }
-                }
-                
-                OrtValue::Tensor {
-                    shape: vec![Dimensions::Fixed(keys.len())],
-                    dtype: DataType::String,
-                    data: Arc::new(data),
-                }
-            },
-            None => {
-                // Empty map
-                OrtValue::Tensor {
-                    shape: vec![Dimensions::Fixed(0)],
-                    dtype: DataType::Int64, // Default
-                    data: Arc::new(Vec::new()),
-                }
-            },
-        };
-        
-        // Create value tensor - simplified implementation
-        // In a real implementation, we would need to combine all values into a single tensor
-        let value_tensor = if let Some(first_value) = map.values().next() {
-            first_value.clone()
-        } else {
-            // Empty map
-            OrtValue::Tensor {
-                shape: vec![Dimensions::Fixed(0)],
-                dtype: DataType::Float, // Default
-                data: Arc::new(Vec::new()),
-            }
-        };
-        
-        // Return both tensors as a sequence
-        Ok(OrtValue::Sequence(vec![key_tensor, value_tensor]))
-    }
-    
-    fn op_map_get(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // MapGet retrieves a value from a map by key
-        let map = match inputs.get(0) {
-            Some(OrtValue::Map(map)) => map,
-            _ => return Err(OrtError::TypeMismatch("MapGet requires a map as first input")),
-        };
-        
-        let key = match inputs.get(1) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                MapKey::Int64(i64::from_le_bytes(data[..8].try_into().unwrap()))
-            },
-            Some(OrtValue::Tensor { dtype: DataType::String, data, .. }) => {
-                // Simple implementation - assumes the tensor contains a single string
-                MapKey::String(String::from_utf8_lossy(data).to_string())
-            },
-            _ => return Err(OrtError::TypeMismatch("MapGet requires a key tensor as second input")),
-        };
-        
-        match map.get(&key) {
-            Some(value) => Ok(value.clone()),
-            None => {
-                // Return default value if provided, otherwise error
-                if inputs.len() > 2 {
-                    Ok(inputs[2].clone())
-                } else {
-                    Err(OrtError::IndexError("Key not found in map"))
-                }
-            }
-        }
-    }
-    
-    fn op_map_has_key(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // MapHasKey checks if a key exists in a map
-        let map = match inputs.get(0) {
-            Some(OrtValue::Map(map)) => map,
-            _ => return Err(OrtError::TypeMismatch("MapHasKey requires a map as first input")),
-        };
-        
-        let key = match inputs.get(1) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                MapKey::Int64(i64::from_le_bytes(data[..8].try_into().unwrap()))
-            },
-            Some(OrtValue::Tensor { dtype: DataType::String, data, .. }) => {
-                // Simple implementation - assumes the tensor contains a single string
-                MapKey::String(String::from_utf8_lossy(data).to_string())
-            },
-            _ => return Err(OrtError::TypeMismatch("MapHasKey requires a key tensor as second input")),
-        };
-        
-        let has_key = map.contains_key(&key) as i64;
-        let data = has_key.to_le_bytes().to_vec();
-        
-        Ok(OrtValue::Tensor {
-            shape: vec![Dimensions::Fixed(1)],
-            dtype: DataType::Int64,
-            data: Arc::new(data),
-        })
-    }
-    
-    fn op_map_keys(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // MapKeys returns all keys in a map
-        let map = match inputs.get(0) {
-            Some(OrtValue::Map(map)) => map,
-            _ => return Err(OrtError::TypeMismatch("MapKeys requires a map as input")),
-        };
-        
-        // Extract keys
-        let keys: Vec<_> = map.keys().collect();
-        
-        // Create key tensor
-        let key_tensor = match keys.first() {
-            Some(MapKey::Int64(_)) => {
-                let data: Vec<u8> = keys.iter().flat_map(|k| {
-                    if let MapKey::Int64(i) = k {
-                        i.to_le_bytes().to_vec()
-                    } else {
-                        vec![] // Should not happen if all keys are the same type
-                    }
-                }).collect();
-                
-                OrtValue::Tensor {
-                    shape: vec![Dimensions::Fixed(keys.len())],
-                    dtype: DataType::Int64,
-                    data: Arc::new(data),
-                }
-            },
-            Some(MapKey::String(_)) => {
-                // Simple implementation - concatenate all strings with their lengths
-                let mut data = Vec::new();
-                for k in keys {
-                    if let MapKey::String(s) = k {
-                        let bytes = s.as_bytes();
-                        let len = bytes.len() as u64;
-                        data.extend_from_slice(&len.to_le_bytes());
-                        data.extend_from_slice(bytes);
-                    }
-                }
-                
-                OrtValue::Tensor {
-                    shape: vec![Dimensions::Fixed(keys.len())],
-                    dtype: DataType::String,
-                    data: Arc::new(data),
-                }
-            },
-            None => {
-                // Empty map
-                OrtValue::Tensor {
-                    shape: vec![Dimensions::Fixed(0)],
-                    dtype: DataType::Int64, // Default
-                    data: Arc::new(Vec::new()),
-                }
-            },
-        };
-        
-        Ok(key_tensor)
-    } 
-   // BERT-specific operations
-    fn op_erf(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // Erf computes the error function of the input tensor
-        let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Erf requires one float tensor"))?)?;
-        
-        // Approximation of the error function
-        let result = array.mapv(|x| {
-            // Constants for approximation
-            let a1 = 0.254829592;
-            let a2 = -0.284496736;
-            let a3 = 1.421413741;
-            let a4 = -1.453152027;
-            let a5 = 1.061405429;
-            let p = 0.3275911;
-            
-            // Save the sign of x
-            let sign = if x < 0.0 { -1.0 } else { 1.0 };
-            let x = x.abs();
-            
-            // A&S formula 7.1.26
-            let t = 1.0 / (1.0 + p * x);
-            let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
-            
-            sign * y
-        });
-        
-        Ok(ndarray_to_ort(result, DataType::Float))
-    }
-    
-    fn op_gelu(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // GELU (Gaussian Error Linear Unit) activation function
-        let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GELU requires one float tensor"))?)?;
-        
-        // GELU(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
-        let result = array.mapv(|x| {
-            // Constants for erf approximation
-            let a1 = 0.254829592;
-            let a2 = -0.284496736;
-            let a3 = 1.421413741;
-            let a4 = -1.453152027;
-            let a5 = 1.061405429;
-            let p = 0.3275911;
-            
-            // Calculate x / sqrt(2)
-            let x_scaled = x / 1.4142135623730951;
-            
-            // Save the sign of x_scaled
-            let sign = if x_scaled < 0.0 { -1.0 } else { 1.0 };
-            let x_abs = x_scaled.abs();
-            
-            // A&S formula 7.1.26 for erf
-            let t = 1.0 / (1.0 + p * x_abs);
-            let erf = sign * (1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x_abs * x_abs).exp());
-            
-            // GELU formula
-            0.5 * x * (1.0 + erf)
-        });
-        
-        Ok(ndarray_to_ort(result, DataType::Float))
-    }
-    
-    fn op_split(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // Split divides a tensor into multiple parts along a specified axis
-        let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Split requires input tensor"))?)?;
-        
-        // Get axis attribute
-        let axis = node.attributes.iter().find(|a| a.name == "axis")
-            .map(|a| a.i as usize)
-            .unwrap_or(0);
-        
-        // Get split attribute (sizes of each output)
-        let split = if inputs.len() > 1 {
-            // Split sizes provided as input tensor
-            match inputs.get(1) {
-                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                    data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
-                }
-                _ => return Err(OrtError::TypeMismatch("Split requires Int64 split tensor as second input")),
-            }
-        } else {
-            // Split sizes provided as attribute
-            node.attributes.iter().find(|a| a.name == "split")
-                .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
-                .unwrap_or_else(|| {
-                    // If not provided, split equally
-                    let dim_size = input.shape()[axis];
-                    let num_outputs = node.output.len();
-                    let size = dim_size / num_outputs;
-                    vec![size; num_outputs]
-                })
-        };
-        
-        // Create a sequence of output tensors
-        let mut outputs = Vec::new();
-        let mut start_idx = 0;
-        
-        for &size in &split {
-            // Create slice for this split
-            let mut indices = Vec::new();
-            for dim in 0..input.ndim() {
-                if dim == axis {
-                    indices.push(ndarray::SliceInfoElem::Slice {
-                        start: start_idx as isize,
-                        end: Some((start_idx + size) as isize),
-                        step: 1,
-                    });
-                    start_idx += size;
-                } else {
-                    indices.push(ndarray::SliceInfoElem::Slice {
-                        start: 0,
-                        end: None,
-                        step: 1,
-                    });
-                }
-            }
-            
-            // Extract the slice
-            let slice = input.slice(&indices[..]);
-            let output = ndarray_to_ort(slice.to_owned(), DataType::Float);
-            outputs.push(output);
-        }
-        
-        Ok(OrtValue::Sequence(outputs))
-    }
-    
-    fn op_dropout(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // Dropout randomly zeroes elements of the input tensor with probability p
-        // In inference mode, dropout is a no-op (just returns the input)
-        let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Dropout requires input tensor"))?)?;
-        
-        // Get ratio attribute (probability of dropping)
-        let _ratio = if inputs.len() > 1 {
-            match inputs.get(1) {
-                Some(OrtValue::Tensor { dtype: DataType::Float, data, .. }) => {
-                    f32::from_le_bytes(data[..4].try_into().unwrap())
-                }
-                _ => 0.5, // Default ratio
-            }
-        } else {
-            node.attributes.iter().find(|a| a.name == "ratio")
-                .map(|a| a.f)
-                .unwrap_or(0.5)
-        };
-        
-        // In inference mode, dropout is a no-op
-        // Return the input tensor and a mask of ones
-        let mask = ArrayD::ones(input.shape());
-        
-        // Return both the input and the mask as a sequence
-        let output_tensor = ndarray_to_ort(input, DataType::Float);
-        let mask_tensor = ndarray_to_ort(mask, DataType::Float);
-        
-        Ok(OrtValue::Sequence(vec![output_tensor, mask_tensor]))
-    }
-    
-    fn op_einsum(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // Einsum performs tensor contractions according to the Einstein summation convention
-        // Get equation attribute
-        let equation = node.attributes.iter().find(|a| a.name == "equation")
-            .map(|a| String::from_utf8_lossy(&a.s).to_string())
-            .ok_or_else(|| OrtError::InvalidTensorData("Einsum requires equation attribute".into()))?;
-        
-        // Parse equation
-        let parts: Vec<&str> = equation.split("->").collect();
-        if parts.len() != 2 {
-            return Err(OrtError::InvalidTensorData("Invalid Einsum equation format".into()));
-        }
-        
-        let input_subscripts: Vec<&str> = parts[0].split(',').collect();
-        let output_subscript = parts[1].trim();
-        
-        // For now, implement only the most common case in BERT: batch matrix multiplication
-        // Example: "abc,acd->abd" (batched matrix multiplication)
-        if input_subscripts.len() == 2 && 
-           input_subscripts[0].len() == 3 && 
-           input_subscripts[1].len() == 3 && 
-           output_subscript.len() == 3 {
-            
-            let a = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Einsum requires input tensors"))?)?;
-            let b = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Einsum requires input tensors"))?)?;
-            
-            // Check if this is a batched matrix multiplication pattern
-            if input_subscripts[0].chars().nth(0) == input_subscripts[1].chars().nth(0) && 
-               input_subscripts[0].chars().nth(2) == input_subscripts[1].chars().nth(1) && 
-               output_subscript.chars().nth(0) == input_subscripts[0].chars().nth(0) && 
-               output_subscript.chars().nth(1) == input_subscripts[0].chars().nth(1) && 
-               output_subscript.chars().nth(2) == input_subscripts[1].chars().nth(2) {
-                
-                // This is batched matrix multiplication: [batch, m, k] @ [batch, k, n] -> [batch, m, n]
-                let batch = a.shape()[0];
-                let m = a.shape()[1];
-                let k = a.shape()[2];
-                let n = b.shape()[2];
-                
-                let mut result = Array3::zeros((batch, m, n));
-                
-                for b_idx in 0..batch {
-                    let a_slice = a.slice(ndarray::s![b_idx, .., ..]);
-                    let b_slice = b.slice(ndarray::s![b_idx, .., ..]);
-                    let mut res_slice = result.slice_mut(ndarray::s![b_idx, .., ..]);
-                    res_slice.assign(&a_slice.dot(&b_slice));
-                }
-                
-                return Ok(ndarray_to_ort(result.into_dyn(), DataType::Float));
-            }
-        }
-        
-        // Fallback for unsupported patterns
-        Err(OrtError::UnsupportedOp(format!("Unsupported Einsum equation: {}", equation)))
-    }
-    
-    fn op_topk(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // TopK finds the k largest or smallest elements along a specified axis
-        let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("TopK requires input tensor"))?)?;
-        
-        // Get k value
-        let k = if inputs.len() > 1 {
-            match inputs.get(1) {
-                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                    i64::from_le_bytes(data[..8].try_into().unwrap()) as usize
-                }
-                _ => return Err(OrtError::TypeMismatch("TopK requires Int64 k tensor as second input")),
-            }
-        } else {
-            node.attributes.iter().find(|a| a.name == "k")
-                .map(|a| a.i as usize)
-                .ok_or_else(|| OrtError::InvalidTensorData("TopK requires k attribute or input".into()))?
-        };
-        
-        // Get axis attribute
-        let axis = node.attributes.iter().find(|a| a.name == "axis")
-            .map(|a| a.i as usize)
-            .unwrap_or(input.ndim() - 1); // Default to last axis
-        
-        // Get largest attribute
-        let largest = node.attributes.iter().find(|a| a.name == "largest")
-            .map(|a| a.i != 0)
-            .unwrap_or(true); // Default to true
-        
-        // Get sorted attribute
-        let sorted = node.attributes.iter().find(|a| a.name == "sorted")
-            .map(|a| a.i != 0)
-            .unwrap_or(true); // Default to true
-        
-        // Create output arrays for values and indices
-        let mut shape = input.shape().to_vec();
-        shape[axis] = k;
-        let mut values = ArrayD::zeros(shape.clone());
-        let mut indices = ArrayD::zeros(shape.clone());
-        
-        // Process each slice along the specified axis
-        let axis_size = input.shape()[axis];
-        
-        // Simple implementation for 2D case
-        if input.ndim() == 2 {
-            if axis == 1 {
-                // Process each row
-                for i in 0..input.shape()[0] {
-                    let row = input.slice(ndarray::s![i, ..]);
-                    let mut pairs: Vec<(usize, f32)> = row.iter()
-                        .enumerate()
-                        .map(|(j, &val)| (j, val))
-                        .collect();
-                    
-                    // Sort by value
-                    if largest {
-                        pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                    } else {
-                        pairs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                    }
-                    
-                    // Take top k
-                    pairs.truncate(k);
-                    
-                    // If sorted is false, restore original order
-                    if !sorted {
-                        pairs.sort_by_key(|&(idx, _)| idx);
-                    }
-                    
-                    // Fill output arrays
-                    for (j, (idx, val)) in pairs.iter().enumerate() {
-                        values[[i, j]] = *val;
-                        indices[[i, j]] = *idx as f32;
-                    }
-                }
-            } else {
-                // Process each column
-                for j in 0..input.shape()[1] {
-                    let col = input.slice(ndarray::s![.., j]);
-                    let mut pairs: Vec<(usize, f32)> = col.iter()
-                        .enumerate()
-                        .map(|(i, &val)| (i, val))
-                        .collect();
-                    
-                    // Sort by value
-                    if largest {
-                        pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                    } else {
-                        pairs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                    }
-                    
-                    // Take top k
-                    pairs.truncate(k);
-                    
-                    // If sorted is false, restore original order
-                    if !sorted {
-                        pairs.sort_by_key(|&(idx, _)| idx);
-                    }
-                    
-                    // Fill output arrays
-                    for (i, (idx, val)) in pairs.iter().enumerate() {
-                        values[[i, j]] = *val;
-                        indices[[i, j]] = *idx as f32;
-                    }
-                }
-            }
-        } else {
-            // For higher dimensions, we'd need a more complex implementation
-            return Err(OrtError::UnsupportedOp("TopK for tensors with more than 2 dimensions is not implemented".into()));
-        }
-        
-        // Convert indices to Int64
-        let indices_data: Vec<u8> = indices.iter()
-            .map(|&idx| (idx as i64).to_le_bytes())
-            .flatten()
-            .collect();
-        
-        let indices_tensor = OrtValue::Tensor {
-            shape: shape.iter().map(|&d| Dimensions::Fixed(d)).collect(),
-            dtype: DataType::Int64,
-            data: Arc::new(indices_data),
-        };
-        
-        // Return both values and indices as a sequence
-        Ok(OrtValue::Sequence(vec![
-            ndarray_to_ort(values, DataType::Float),
-            indices_tensor,
-        ]))
-    }
-    
-    fn op_gather_elements(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // GatherElements gathers elements from a tensor at specified indices
-        let data = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GatherElements requires data tensor"))?)?;
-        
-        let indices = match inputs.get(1) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data: idx_data, shape: idx_shape, .. }) => {
-                // Convert indices to a usable format
-                let concrete_shape: Vec<usize> = idx_shape.iter().map(|d| match d {
-                    Dimensions::Fixed(n) => *n,
-                    Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Cannot use symbolic shape for indices".into())),
-                }).collect::<Result<_, _>>()?;
-                
-                let indices_vec: Vec<i64> = idx_data.chunks(8)
-                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
-                    .collect();
-                
-                ArrayD::from_shape_vec(concrete_shape, indices_vec)
-                    .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for indices".into()))?
-            }
-            _ => return Err(OrtError::TypeMismatch("GatherElements requires Int64 indices tensor")),
-        };
-        
-        // Get axis attribute
-        let axis = node.attributes.iter().find(|a| a.name == "axis")
-            .map(|a| a.i as usize)
-            .unwrap_or(0); // Default to first axis
-        
-        // Create output tensor with same shape as indices
-        let mut result = ArrayD::zeros(indices.shape());
-        
-        // Gather elements
-        for idx in ndarray::indices(indices.shape()) {
-            let mut data_idx = idx.slice().to_vec();
-            let index = indices[idx.slice()];
-            
-            // Handle negative indices
-            let axis_size = data.shape()[axis];
-            let normalized_index = if index < 0 {
-                (axis_size as i64 + index) as usize
-            } else {
-                index as usize
-            };
-            
-            // Replace the axis index with the gathered index
-            data_idx[axis] = normalized_index;
-            
-            // Get the value from data tensor
-            result[idx.slice()] = data[&data_idx[..]];
-        }
-        
-        Ok(ndarray_to_ort(result, DataType::Float))
-    }
-    
-    fn op_gather_nd(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // GatherND gathers slices from a tensor at specified indices
-        let data = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GatherND requires data tensor"))?)?;
-        
-        let indices = match inputs.get(1) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data: idx_data, shape: idx_shape, .. }) => {
-                // Convert indices to a usable format
-                let concrete_shape: Vec<usize> = idx_shape.iter().map(|d| match d {
-                    Dimensions::Fixed(n) => *n,
-                    Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Cannot use symbolic shape for indices".into())),
-                }).collect::<Result<_, _>>()?;
-                
-                let indices_vec: Vec<i64> = idx_data.chunks(8)
-                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
-                    .collect();
-                
-                ArrayD::from_shape_vec(concrete_shape, indices_vec)
-                    .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for indices".into()))?
-            }
-            _ => return Err(OrtError::TypeMismatch("GatherND requires Int64 indices tensor")),
-        };
-        
-        // Get batch_dims attribute
-        let batch_dims = node.attributes.iter().find(|a| a.name == "batch_dims")
-            .map(|a| a.i as usize)
-            .unwrap_or(0); // Default to 0
-        
-        // Calculate output shape
-        let indices_shape = indices.shape();
-        let data_shape = data.shape();
-        
-        let indices_rank = indices_shape.len();
-        let last_dim = indices_shape[indices_rank - 1];
-        
-        // Output shape is indices.shape[:-1] + data.shape[indices.shape[-1]:]
-        let mut output_shape = Vec::new();
-        output_shape.extend_from_slice(&indices_shape[..indices_rank - 1]);
-        output_shape.extend_from_slice(&data_shape[batch_dims + last_dim..]);
-        
-        let mut result = ArrayD::zeros(output_shape.clone());
-        
-        // Gather elements
-        for idx in ndarray::indices(&indices_shape[..indices_rank - 1]) {
-            // Get the indices for this element
-            let mut gather_indices = Vec::new();
-            for i in 0..last_dim {
-                let index = indices[&[idx.slice(), &[i]].concat()[..]];
-                
-                // Handle negative indices
-                let axis_size = data_shape[batch_dims + i];
-                let normalized_index = if index < 0 {
-                    (axis_size as i64 + index) as usize
-                } else {
-                    index as usize
-                };
-                
-                gather_indices.push(normalized_index);
-            }
-            
-            // Construct full index into data tensor
-            let mut data_idx = Vec::new();
-            data_idx.extend_from_slice(&idx.slice()[..batch_dims]); // Batch dimensions
-            data_idx.extend_from_slice(&gather_indices); // Gathered indices
-            
-            // Get the slice from data tensor
-            let slice = data.slice(ndarray::s![data_idx.as_slice(), ..]);
-            
-            // Copy to result
-            let mut result_idx = idx.slice().to_vec();
-            result_idx.extend_from_slice(&[0; 0]); // Placeholder for remaining dimensions
-            
-            // This is a simplified implementation - in a real implementation, we would need to handle arbitrary slicing
-            result[&result_idx[..]] = slice[[0]];
-        }
-        
-        Ok(ndarray_to_ort(result, DataType::Float))
-    }
-    
-    fn op_reduce_max(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // ReduceMax computes the maximum value of elements across dimensions of a tensor
-        let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("ReduceMax requires input tensor"))?)?;
-        
-        // Get axes attribute or input
-        let axes = if inputs.len() > 1 {
-            match inputs.get(1) {
-                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                    data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
-                }
-                _ => return Err(OrtError::TypeMismatch("ReduceMax requires Int64 axes tensor as second input")),
-            }
-        } else {
-            node.attributes.iter().find(|a| a.name == "axes")
-                .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
-                .unwrap_or_else(|| (0..input.ndim()).collect()) // Default to all axes
-        };
-        
-        // Get keepdims attribute
-        let keepdims = node.attributes.iter().find(|a| a.name == "keepdims")
-            .map(|a| a.i != 0)
-            .unwrap_or(true); // Default to true
-        
-        // Sort axes in descending order to avoid dimension issues when reducing
-        let mut sorted_axes = axes.clone();
-        sorted_axes.sort_by(|a, b| b.cmp(a));
-        
-        // Reduce along each axis
-        let mut result = input.clone();
-        for &axis in &sorted_axes {
-            result = result.map_axis(Axis(axis), |view| {
-                view.fold(f32::NEG_INFINITY, |acc, &x| acc.max(x))
-            });
-        }
-        
-        // Reshape if keepdims is true
-        if keepdims {
-            let mut new_shape = input.shape().to_vec();
-            for &axis in &axes {
-                new_shape[axis] = 1;
-            }
-            result = result.into_shape(new_shape).unwrap();
-        }
-        
-        Ok(ndarray_to_ort(result, DataType::Float))
-    }
-    
-    fn op_attention(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        // Attention computes scaled dot-product attention
-        // Inputs: query, key, value, mask (optional)
-        let query = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Attention requires query tensor"))?)?;
-        let key = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Attention requires key tensor"))?)?;
-        let value = ort_to_ndarray(inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("Attention requires value tensor"))?)?;
-        
-        // Optional mask
-        let mask = if inputs.len() > 3 {
-            Some(ort_to_ndarray(inputs.get(3).unwrap())?)
-        } else {
-            None
-        };
-        
-        // Get num_heads attribute
-        let num_heads = node.attributes.iter().find(|a| a.name == "num_heads")
-            .map(|a| a.i as usize)
-            .unwrap_or(1); // Default to 1
-        
-        // Shape validation
-        let q_shape = query.shape();
-        let k_shape = key.shape();
-        let v_shape = value.shape();
-        
-        if q_shape.len() != 4 || k_shape.len() != 4 || v_shape.len() != 4 {
-            return Err(OrtError::TypeMismatch("Attention requires 4D tensors [batch, seq_len, num_heads, head_dim]"));
-        }
-        
-        let (batch_size, q_seq_len, _, head_dim) = (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
-        let k_seq_len = k_shape[1];
-        
-        // Compute attention scores: Q * K^T / sqrt(head_dim)
-        let mut scores = Array4::zeros((batch_size, num_heads, q_seq_len, k_seq_len));
-        
-        for b in 0..batch_size {
-            for h in 0..num_heads {
-                let q = query.slice(ndarray::s![b, .., h, ..]);
-                let k = key.slice(ndarray::s![b, .., h, ..]);
-                
-                // Compute Q * K^T
-                let qk = q.dot(&k.t());
-                
-                // Scale by sqrt(head_dim)
-                let scale = (head_dim as f32).sqrt();
-                let scaled_qk = qk / scale;
-                
-                scores.slice_mut(ndarray::s![b, h, .., ..]).assign(&scaled_qk);
-            }
-        }
-        
-        // Apply mask if provided
-        if let Some(m) = mask {
-            // Broadcast mask to scores shape
-            // This is a simplified implementation - in a real implementation, we would need to handle broadcasting properly
-            for b in 0..batch_size {
-                for h in 0..num_heads {
-                    for i in 0..q_seq_len {
-                        for j in 0..k_seq_len {
-                            if m[[b, 0, i, j]] == 0.0 {
-                                scores[[b, h, i, j]] = f32::NEG_INFINITY;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Apply softmax
-        let mut attention_weights = Array4::zeros(scores.raw_dim());
-        
-        for b in 0..batch_size {
-            for h in 0..num_heads {
-                for i in 0..q_seq_len {
-                    let row = scores.slice(ndarray::s![b, h, i, ..]);
-                    
-                    // Compute softmax: exp(x_i) / sum(exp(x_j))
-                    let max_val = row.fold(f32::NEG_INFINITY, |acc, &x| acc.max(x));
-                    let exp_row: Vec<f32> = row.iter().map(|&x| (x - max_val).exp()).collect();
-                    let sum_exp: f32 = exp_row.iter().sum();
-                    
-                    for (j, &exp_val) in exp_row.iter().enumerate() {
-                        attention_weights[[b, h, i, j]] = exp_val / sum_exp;
-                    }
-                }
-            }
-        }
-        
-        // Compute weighted sum: attention_weights * V
-        let mut output = Array4::zeros((batch_size, q_seq_len, num_heads, head_dim));
-        
-        for b in 0..batch_size {
-            for h in 0..num_heads {
-                for i in 0..q_seq_len {
-                    let weights = attention_weights.slice(ndarray::s![b, h, i, ..]);
-                    let v = value.slice(ndarray::s![b, .., h, ..]);
-                    
-                    // Compute weighted sum
-                    for d in 0..head_dim {
-                        let mut sum = 0.0;
-                        for j in 0..k_seq_len {
-                            sum += weights[j] * v[[j, d]];
-                        }
-                        output[[b, i, h, d]] = sum;
-                    }
-                }
-            }
-        }
-        
-        Ok(ndarray_to_ort(output.into_dyn(), DataType::Float))
-    }
-}
+   

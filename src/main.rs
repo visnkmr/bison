@@ -8,6 +8,7 @@ mod tests {
     pub mod parser_test;
     pub mod onnx_model_test;
     pub mod sequence_map_test;
+    pub mod bert_ops_test;
 }
 
 // Static counter for node indexing
@@ -1199,6 +1200,18 @@ impl OrtEngine {
         self.node_registry.insert("Conv".into(), Self::op_conv);
         self.node_registry.insert("LayerNormalization".into(), Self::op_layer_normalization);
         self.node_registry.insert("Gemm".into(), Self::op_gemm);
+        
+        // BERT-specific operators
+        self.node_registry.insert("Erf".into(), Self::op_erf);
+        self.node_registry.insert("Gelu".into(), Self::op_gelu);
+        self.node_registry.insert("Split".into(), Self::op_split);
+        self.node_registry.insert("Dropout".into(), Self::op_dropout);
+        self.node_registry.insert("Einsum".into(), Self::op_einsum);
+        self.node_registry.insert("TopK".into(), Self::op_topk);
+        self.node_registry.insert("GatherElements".into(), Self::op_gather_elements);
+        self.node_registry.insert("GatherND".into(), Self::op_gather_nd);
+        self.node_registry.insert("ReduceMax".into(), Self::op_reduce_max);
+        self.node_registry.insert("Attention".into(), Self::op_attention);
         
         // Sequence operators
         self.node_registry.insert("SequenceAt".into(), Self::op_sequence_at);
@@ -3384,4 +3397,633 @@ fn main() -> Result<()> {
         };
         
         Ok(key_tensor)
+    } 
+   // BERT-specific operations
+    fn op_erf(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Erf computes the error function of the input tensor
+        let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Erf requires one float tensor"))?)?;
+        
+        // Approximation of the error function
+        let result = array.mapv(|x| {
+            // Constants for approximation
+            let a1 = 0.254829592;
+            let a2 = -0.284496736;
+            let a3 = 1.421413741;
+            let a4 = -1.453152027;
+            let a5 = 1.061405429;
+            let p = 0.3275911;
+            
+            // Save the sign of x
+            let sign = if x < 0.0 { -1.0 } else { 1.0 };
+            let x = x.abs();
+            
+            // A&S formula 7.1.26
+            let t = 1.0 / (1.0 + p * x);
+            let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
+            
+            sign * y
+        });
+        
+        Ok(ndarray_to_ort(result, DataType::Float))
     }
+    
+    fn op_gelu(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // GELU (Gaussian Error Linear Unit) activation function
+        let array = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GELU requires one float tensor"))?)?;
+        
+        // GELU(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
+        let result = array.mapv(|x| {
+            // Constants for erf approximation
+            let a1 = 0.254829592;
+            let a2 = -0.284496736;
+            let a3 = 1.421413741;
+            let a4 = -1.453152027;
+            let a5 = 1.061405429;
+            let p = 0.3275911;
+            
+            // Calculate x / sqrt(2)
+            let x_scaled = x / 1.4142135623730951;
+            
+            // Save the sign of x_scaled
+            let sign = if x_scaled < 0.0 { -1.0 } else { 1.0 };
+            let x_abs = x_scaled.abs();
+            
+            // A&S formula 7.1.26 for erf
+            let t = 1.0 / (1.0 + p * x_abs);
+            let erf = sign * (1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x_abs * x_abs).exp());
+            
+            // GELU formula
+            0.5 * x * (1.0 + erf)
+        });
+        
+        Ok(ndarray_to_ort(result, DataType::Float))
+    }
+    
+    fn op_split(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Split divides a tensor into multiple parts along a specified axis
+        let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Split requires input tensor"))?)?;
+        
+        // Get axis attribute
+        let axis = node.attributes.iter().find(|a| a.name == "axis")
+            .map(|a| a.i as usize)
+            .unwrap_or(0);
+        
+        // Get split attribute (sizes of each output)
+        let split = if inputs.len() > 1 {
+            // Split sizes provided as input tensor
+            match inputs.get(1) {
+                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                    data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                _ => return Err(OrtError::TypeMismatch("Split requires Int64 split tensor as second input")),
+            }
+        } else {
+            // Split sizes provided as attribute
+            node.attributes.iter().find(|a| a.name == "split")
+                .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+                .unwrap_or_else(|| {
+                    // If not provided, split equally
+                    let dim_size = input.shape()[axis];
+                    let num_outputs = node.output.len();
+                    let size = dim_size / num_outputs;
+                    vec![size; num_outputs]
+                })
+        };
+        
+        // Create a sequence of output tensors
+        let mut outputs = Vec::new();
+        let mut start_idx = 0;
+        
+        for &size in &split {
+            // Create slice for this split
+            let mut indices = Vec::new();
+            for dim in 0..input.ndim() {
+                if dim == axis {
+                    indices.push(ndarray::SliceInfoElem::Slice {
+                        start: start_idx as isize,
+                        end: Some((start_idx + size) as isize),
+                        step: 1,
+                    });
+                    start_idx += size;
+                } else {
+                    indices.push(ndarray::SliceInfoElem::Slice {
+                        start: 0,
+                        end: None,
+                        step: 1,
+                    });
+                }
+            }
+            
+            // Extract the slice
+            let slice = input.slice(&indices[..]);
+            let output = ndarray_to_ort(slice.to_owned(), DataType::Float);
+            outputs.push(output);
+        }
+        
+        Ok(OrtValue::Sequence(outputs))
+    }
+    
+    fn op_dropout(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Dropout randomly zeroes elements of the input tensor with probability p
+        // In inference mode, dropout is a no-op (just returns the input)
+        let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Dropout requires input tensor"))?)?;
+        
+        // Get ratio attribute (probability of dropping)
+        let _ratio = if inputs.len() > 1 {
+            match inputs.get(1) {
+                Some(OrtValue::Tensor { dtype: DataType::Float, data, .. }) => {
+                    f32::from_le_bytes(data[..4].try_into().unwrap())
+                }
+                _ => 0.5, // Default ratio
+            }
+        } else {
+            node.attributes.iter().find(|a| a.name == "ratio")
+                .map(|a| a.f)
+                .unwrap_or(0.5)
+        };
+        
+        // In inference mode, dropout is a no-op
+        // Return the input tensor and a mask of ones
+        let mask = ArrayD::ones(input.shape());
+        
+        // Return both the input and the mask as a sequence
+        let output_tensor = ndarray_to_ort(input, DataType::Float);
+        let mask_tensor = ndarray_to_ort(mask, DataType::Float);
+        
+        Ok(OrtValue::Sequence(vec![output_tensor, mask_tensor]))
+    }
+    
+    fn op_einsum(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Einsum performs tensor contractions according to the Einstein summation convention
+        // Get equation attribute
+        let equation = node.attributes.iter().find(|a| a.name == "equation")
+            .map(|a| String::from_utf8_lossy(&a.s).to_string())
+            .ok_or_else(|| OrtError::InvalidTensorData("Einsum requires equation attribute".into()))?;
+        
+        // Parse equation
+        let parts: Vec<&str> = equation.split("->").collect();
+        if parts.len() != 2 {
+            return Err(OrtError::InvalidTensorData("Invalid Einsum equation format".into()));
+        }
+        
+        let input_subscripts: Vec<&str> = parts[0].split(',').collect();
+        let output_subscript = parts[1].trim();
+        
+        // For now, implement only the most common case in BERT: batch matrix multiplication
+        // Example: "abc,acd->abd" (batched matrix multiplication)
+        if input_subscripts.len() == 2 && 
+           input_subscripts[0].len() == 3 && 
+           input_subscripts[1].len() == 3 && 
+           output_subscript.len() == 3 {
+            
+            let a = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Einsum requires input tensors"))?)?;
+            let b = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Einsum requires input tensors"))?)?;
+            
+            // Check if this is a batched matrix multiplication pattern
+            if input_subscripts[0].chars().nth(0) == input_subscripts[1].chars().nth(0) && 
+               input_subscripts[0].chars().nth(2) == input_subscripts[1].chars().nth(1) && 
+               output_subscript.chars().nth(0) == input_subscripts[0].chars().nth(0) && 
+               output_subscript.chars().nth(1) == input_subscripts[0].chars().nth(1) && 
+               output_subscript.chars().nth(2) == input_subscripts[1].chars().nth(2) {
+                
+                // This is batched matrix multiplication: [batch, m, k] @ [batch, k, n] -> [batch, m, n]
+                let batch = a.shape()[0];
+                let m = a.shape()[1];
+                let k = a.shape()[2];
+                let n = b.shape()[2];
+                
+                let mut result = Array3::zeros((batch, m, n));
+                
+                for b_idx in 0..batch {
+                    let a_slice = a.slice(ndarray::s![b_idx, .., ..]);
+                    let b_slice = b.slice(ndarray::s![b_idx, .., ..]);
+                    let mut res_slice = result.slice_mut(ndarray::s![b_idx, .., ..]);
+                    res_slice.assign(&a_slice.dot(&b_slice));
+                }
+                
+                return Ok(ndarray_to_ort(result.into_dyn(), DataType::Float));
+            }
+        }
+        
+        // Fallback for unsupported patterns
+        Err(OrtError::UnsupportedOp(format!("Unsupported Einsum equation: {}", equation)))
+    }
+    
+    fn op_topk(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // TopK finds the k largest or smallest elements along a specified axis
+        let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("TopK requires input tensor"))?)?;
+        
+        // Get k value
+        let k = if inputs.len() > 1 {
+            match inputs.get(1) {
+                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                    i64::from_le_bytes(data[..8].try_into().unwrap()) as usize
+                }
+                _ => return Err(OrtError::TypeMismatch("TopK requires Int64 k tensor as second input")),
+            }
+        } else {
+            node.attributes.iter().find(|a| a.name == "k")
+                .map(|a| a.i as usize)
+                .ok_or_else(|| OrtError::InvalidTensorData("TopK requires k attribute or input".into()))?
+        };
+        
+        // Get axis attribute
+        let axis = node.attributes.iter().find(|a| a.name == "axis")
+            .map(|a| a.i as usize)
+            .unwrap_or(input.ndim() - 1); // Default to last axis
+        
+        // Get largest attribute
+        let largest = node.attributes.iter().find(|a| a.name == "largest")
+            .map(|a| a.i != 0)
+            .unwrap_or(true); // Default to true
+        
+        // Get sorted attribute
+        let sorted = node.attributes.iter().find(|a| a.name == "sorted")
+            .map(|a| a.i != 0)
+            .unwrap_or(true); // Default to true
+        
+        // Create output arrays for values and indices
+        let mut shape = input.shape().to_vec();
+        shape[axis] = k;
+        let mut values = ArrayD::zeros(shape.clone());
+        let mut indices = ArrayD::zeros(shape.clone());
+        
+        // Process each slice along the specified axis
+        let axis_size = input.shape()[axis];
+        
+        // Simple implementation for 2D case
+        if input.ndim() == 2 {
+            if axis == 1 {
+                // Process each row
+                for i in 0..input.shape()[0] {
+                    let row = input.slice(ndarray::s![i, ..]);
+                    let mut pairs: Vec<(usize, f32)> = row.iter()
+                        .enumerate()
+                        .map(|(j, &val)| (j, val))
+                        .collect();
+                    
+                    // Sort by value
+                    if largest {
+                        pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    } else {
+                        pairs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                    }
+                    
+                    // Take top k
+                    pairs.truncate(k);
+                    
+                    // If sorted is false, restore original order
+                    if !sorted {
+                        pairs.sort_by_key(|&(idx, _)| idx);
+                    }
+                    
+                    // Fill output arrays
+                    for (j, (idx, val)) in pairs.iter().enumerate() {
+                        values[[i, j]] = *val;
+                        indices[[i, j]] = *idx as f32;
+                    }
+                }
+            } else {
+                // Process each column
+                for j in 0..input.shape()[1] {
+                    let col = input.slice(ndarray::s![.., j]);
+                    let mut pairs: Vec<(usize, f32)> = col.iter()
+                        .enumerate()
+                        .map(|(i, &val)| (i, val))
+                        .collect();
+                    
+                    // Sort by value
+                    if largest {
+                        pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    } else {
+                        pairs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                    }
+                    
+                    // Take top k
+                    pairs.truncate(k);
+                    
+                    // If sorted is false, restore original order
+                    if !sorted {
+                        pairs.sort_by_key(|&(idx, _)| idx);
+                    }
+                    
+                    // Fill output arrays
+                    for (i, (idx, val)) in pairs.iter().enumerate() {
+                        values[[i, j]] = *val;
+                        indices[[i, j]] = *idx as f32;
+                    }
+                }
+            }
+        } else {
+            // For higher dimensions, we'd need a more complex implementation
+            return Err(OrtError::UnsupportedOp("TopK for tensors with more than 2 dimensions is not implemented".into()));
+        }
+        
+        // Convert indices to Int64
+        let indices_data: Vec<u8> = indices.iter()
+            .map(|&idx| (idx as i64).to_le_bytes())
+            .flatten()
+            .collect();
+        
+        let indices_tensor = OrtValue::Tensor {
+            shape: shape.iter().map(|&d| Dimensions::Fixed(d)).collect(),
+            dtype: DataType::Int64,
+            data: Arc::new(indices_data),
+        };
+        
+        // Return both values and indices as a sequence
+        Ok(OrtValue::Sequence(vec![
+            ndarray_to_ort(values, DataType::Float),
+            indices_tensor,
+        ]))
+    }
+    
+    fn op_gather_elements(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // GatherElements gathers elements from a tensor at specified indices
+        let data = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GatherElements requires data tensor"))?)?;
+        
+        let indices = match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data: idx_data, shape: idx_shape, .. }) => {
+                // Convert indices to a usable format
+                let concrete_shape: Vec<usize> = idx_shape.iter().map(|d| match d {
+                    Dimensions::Fixed(n) => *n,
+                    Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Cannot use symbolic shape for indices".into())),
+                }).collect::<Result<_, _>>()?;
+                
+                let indices_vec: Vec<i64> = idx_data.chunks(8)
+                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    .collect();
+                
+                ArrayD::from_shape_vec(concrete_shape, indices_vec)
+                    .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for indices".into()))?
+            }
+            _ => return Err(OrtError::TypeMismatch("GatherElements requires Int64 indices tensor")),
+        };
+        
+        // Get axis attribute
+        let axis = node.attributes.iter().find(|a| a.name == "axis")
+            .map(|a| a.i as usize)
+            .unwrap_or(0); // Default to first axis
+        
+        // Create output tensor with same shape as indices
+        let mut result = ArrayD::zeros(indices.shape());
+        
+        // Gather elements
+        for idx in ndarray::indices(indices.shape()) {
+            let mut data_idx = idx.slice().to_vec();
+            let index = indices[idx.slice()];
+            
+            // Handle negative indices
+            let axis_size = data.shape()[axis];
+            let normalized_index = if index < 0 {
+                (axis_size as i64 + index) as usize
+            } else {
+                index as usize
+            };
+            
+            // Replace the axis index with the gathered index
+            data_idx[axis] = normalized_index;
+            
+            // Get the value from data tensor
+            result[idx.slice()] = data[&data_idx[..]];
+        }
+        
+        Ok(ndarray_to_ort(result, DataType::Float))
+    }
+    
+    fn op_gather_nd(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // GatherND gathers slices from a tensor at specified indices
+        let data = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GatherND requires data tensor"))?)?;
+        
+        let indices = match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data: idx_data, shape: idx_shape, .. }) => {
+                // Convert indices to a usable format
+                let concrete_shape: Vec<usize> = idx_shape.iter().map(|d| match d {
+                    Dimensions::Fixed(n) => *n,
+                    Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Cannot use symbolic shape for indices".into())),
+                }).collect::<Result<_, _>>()?;
+                
+                let indices_vec: Vec<i64> = idx_data.chunks(8)
+                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    .collect();
+                
+                ArrayD::from_shape_vec(concrete_shape, indices_vec)
+                    .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for indices".into()))?
+            }
+            _ => return Err(OrtError::TypeMismatch("GatherND requires Int64 indices tensor")),
+        };
+        
+        // Get batch_dims attribute
+        let batch_dims = node.attributes.iter().find(|a| a.name == "batch_dims")
+            .map(|a| a.i as usize)
+            .unwrap_or(0); // Default to 0
+        
+        // Calculate output shape
+        let indices_shape = indices.shape();
+        let data_shape = data.shape();
+        
+        let indices_rank = indices_shape.len();
+        let last_dim = indices_shape[indices_rank - 1];
+        
+        // Output shape is indices.shape[:-1] + data.shape[indices.shape[-1]:]
+        let mut output_shape = Vec::new();
+        output_shape.extend_from_slice(&indices_shape[..indices_rank - 1]);
+        output_shape.extend_from_slice(&data_shape[batch_dims + last_dim..]);
+        
+        let mut result = ArrayD::zeros(output_shape.clone());
+        
+        // Gather elements
+        for idx in ndarray::indices(&indices_shape[..indices_rank - 1]) {
+            // Get the indices for this element
+            let mut gather_indices = Vec::new();
+            for i in 0..last_dim {
+                let index = indices[&[idx.slice(), &[i]].concat()[..]];
+                
+                // Handle negative indices
+                let axis_size = data_shape[batch_dims + i];
+                let normalized_index = if index < 0 {
+                    (axis_size as i64 + index) as usize
+                } else {
+                    index as usize
+                };
+                
+                gather_indices.push(normalized_index);
+            }
+            
+            // Construct full index into data tensor
+            let mut data_idx = Vec::new();
+            data_idx.extend_from_slice(&idx.slice()[..batch_dims]); // Batch dimensions
+            data_idx.extend_from_slice(&gather_indices); // Gathered indices
+            
+            // Get the slice from data tensor
+            let slice = data.slice(ndarray::s![data_idx.as_slice(), ..]);
+            
+            // Copy to result
+            let mut result_idx = idx.slice().to_vec();
+            result_idx.extend_from_slice(&[0; 0]); // Placeholder for remaining dimensions
+            
+            // This is a simplified implementation - in a real implementation, we would need to handle arbitrary slicing
+            result[&result_idx[..]] = slice[[0]];
+        }
+        
+        Ok(ndarray_to_ort(result, DataType::Float))
+    }
+    
+    fn op_reduce_max(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // ReduceMax computes the maximum value of elements across dimensions of a tensor
+        let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("ReduceMax requires input tensor"))?)?;
+        
+        // Get axes attribute or input
+        let axes = if inputs.len() > 1 {
+            match inputs.get(1) {
+                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                    data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                _ => return Err(OrtError::TypeMismatch("ReduceMax requires Int64 axes tensor as second input")),
+            }
+        } else {
+            node.attributes.iter().find(|a| a.name == "axes")
+                .map(|a| a.ints.iter().map(|&i| i as usize).collect::<Vec<_>>())
+                .unwrap_or_else(|| (0..input.ndim()).collect()) // Default to all axes
+        };
+        
+        // Get keepdims attribute
+        let keepdims = node.attributes.iter().find(|a| a.name == "keepdims")
+            .map(|a| a.i != 0)
+            .unwrap_or(true); // Default to true
+        
+        // Sort axes in descending order to avoid dimension issues when reducing
+        let mut sorted_axes = axes.clone();
+        sorted_axes.sort_by(|a, b| b.cmp(a));
+        
+        // Reduce along each axis
+        let mut result = input.clone();
+        for &axis in &sorted_axes {
+            result = result.map_axis(Axis(axis), |view| {
+                view.fold(f32::NEG_INFINITY, |acc, &x| acc.max(x))
+            });
+        }
+        
+        // Reshape if keepdims is true
+        if keepdims {
+            let mut new_shape = input.shape().to_vec();
+            for &axis in &axes {
+                new_shape[axis] = 1;
+            }
+            result = result.into_shape(new_shape).unwrap();
+        }
+        
+        Ok(ndarray_to_ort(result, DataType::Float))
+    }
+    
+    fn op_attention(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Attention computes scaled dot-product attention
+        // Inputs: query, key, value, mask (optional)
+        let query = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Attention requires query tensor"))?)?;
+        let key = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Attention requires key tensor"))?)?;
+        let value = ort_to_ndarray(inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("Attention requires value tensor"))?)?;
+        
+        // Optional mask
+        let mask = if inputs.len() > 3 {
+            Some(ort_to_ndarray(inputs.get(3).unwrap())?)
+        } else {
+            None
+        };
+        
+        // Get num_heads attribute
+        let num_heads = node.attributes.iter().find(|a| a.name == "num_heads")
+            .map(|a| a.i as usize)
+            .unwrap_or(1); // Default to 1
+        
+        // Shape validation
+        let q_shape = query.shape();
+        let k_shape = key.shape();
+        let v_shape = value.shape();
+        
+        if q_shape.len() != 4 || k_shape.len() != 4 || v_shape.len() != 4 {
+            return Err(OrtError::TypeMismatch("Attention requires 4D tensors [batch, seq_len, num_heads, head_dim]"));
+        }
+        
+        let (batch_size, q_seq_len, _, head_dim) = (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
+        let k_seq_len = k_shape[1];
+        
+        // Compute attention scores: Q * K^T / sqrt(head_dim)
+        let mut scores = Array4::zeros((batch_size, num_heads, q_seq_len, k_seq_len));
+        
+        for b in 0..batch_size {
+            for h in 0..num_heads {
+                let q = query.slice(ndarray::s![b, .., h, ..]);
+                let k = key.slice(ndarray::s![b, .., h, ..]);
+                
+                // Compute Q * K^T
+                let qk = q.dot(&k.t());
+                
+                // Scale by sqrt(head_dim)
+                let scale = (head_dim as f32).sqrt();
+                let scaled_qk = qk / scale;
+                
+                scores.slice_mut(ndarray::s![b, h, .., ..]).assign(&scaled_qk);
+            }
+        }
+        
+        // Apply mask if provided
+        if let Some(m) = mask {
+            // Broadcast mask to scores shape
+            // This is a simplified implementation - in a real implementation, we would need to handle broadcasting properly
+            for b in 0..batch_size {
+                for h in 0..num_heads {
+                    for i in 0..q_seq_len {
+                        for j in 0..k_seq_len {
+                            if m[[b, 0, i, j]] == 0.0 {
+                                scores[[b, h, i, j]] = f32::NEG_INFINITY;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Apply softmax
+        let mut attention_weights = Array4::zeros(scores.raw_dim());
+        
+        for b in 0..batch_size {
+            for h in 0..num_heads {
+                for i in 0..q_seq_len {
+                    let row = scores.slice(ndarray::s![b, h, i, ..]);
+                    
+                    // Compute softmax: exp(x_i) / sum(exp(x_j))
+                    let max_val = row.fold(f32::NEG_INFINITY, |acc, &x| acc.max(x));
+                    let exp_row: Vec<f32> = row.iter().map(|&x| (x - max_val).exp()).collect();
+                    let sum_exp: f32 = exp_row.iter().sum();
+                    
+                    for (j, &exp_val) in exp_row.iter().enumerate() {
+                        attention_weights[[b, h, i, j]] = exp_val / sum_exp;
+                    }
+                }
+            }
+        }
+        
+        // Compute weighted sum: attention_weights * V
+        let mut output = Array4::zeros((batch_size, q_seq_len, num_heads, head_dim));
+        
+        for b in 0..batch_size {
+            for h in 0..num_heads {
+                for i in 0..q_seq_len {
+                    let weights = attention_weights.slice(ndarray::s![b, h, i, ..]);
+                    let v = value.slice(ndarray::s![b, .., h, ..]);
+                    
+                    // Compute weighted sum
+                    for d in 0..head_dim {
+                        let mut sum = 0.0;
+                        for j in 0..k_seq_len {
+                            sum += weights[j] * v[[j, d]];
+                        }
+                        output[[b, i, h, d]] = sum;
+                    }
+                }
+            }
+        }
+        
+        Ok(ndarray_to_ort(output.into_dyn(), DataType::Float))
+    }
+}

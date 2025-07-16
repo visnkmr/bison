@@ -7,6 +7,7 @@ mod tests {
     pub mod tensor_ops_test;
     pub mod parser_test;
     pub mod onnx_model_test;
+    pub mod sequence_map_test;
 }
 
 // Static counter for node indexing
@@ -837,7 +838,57 @@ impl ShapeInference {
                 )));
             }
             Ok(vec![input_shapes[0].clone()])
-        }
+        },
+        // Sequence operators
+        "SequenceAt" => {
+            // Output shape depends on the sequence element shape, which we don't know at inference time
+            // Return a placeholder shape
+            Ok(vec![vec![Dimensions::Symbolic("unknown".to_string())]])
+        },
+        "SequenceConstruct" => {
+            // Output is a sequence, not a tensor, so no shape to infer
+            Ok(vec![vec![]])
+        },
+        "SequenceEmpty" => {
+            // Output is an empty sequence, not a tensor, so no shape to infer
+            Ok(vec![vec![]])
+        },
+        "SequenceErase" => {
+            // Output is a sequence, not a tensor, so no shape to infer
+            Ok(vec![vec![]])
+        },
+        "SequenceInsert" => {
+            // Output is a sequence, not a tensor, so no shape to infer
+            Ok(vec![vec![]])
+        },
+        "SequenceLength" => {
+            // Output is a scalar tensor
+            Ok(vec![vec![Dimensions::Fixed(1)]])
+        },
+        // Map operators
+        "MapFromTensor" => {
+            // Output is a map, not a tensor, so no shape to infer
+            Ok(vec![vec![]])
+        },
+        "MapToTensor" => {
+            // Output is a sequence of two tensors (keys and values)
+            // We don't know their shapes at inference time
+            Ok(vec![vec![]])
+        },
+        "MapGet" => {
+            // Output shape depends on the map value shape, which we don't know at inference time
+            // Return a placeholder shape
+            Ok(vec![vec![Dimensions::Symbolic("unknown".to_string())]])
+        },
+        "MapHasKey" => {
+            // Output is a scalar tensor
+            Ok(vec![vec![Dimensions::Fixed(1)]])
+        },
+        "MapKeys" => {
+            // Output shape depends on the number of keys in the map, which we don't know at inference time
+            // Return a placeholder shape
+            Ok(vec![vec![Dimensions::Symbolic("unknown".to_string())]])
+        },
         "MatMul" => {
             // Matrix multiplication: [..., m, k] @ [..., k, n] -> [..., m, n]
             let shape1 = &input_shapes[0];
@@ -1148,14 +1199,36 @@ impl OrtEngine {
         self.node_registry.insert("Conv".into(), Self::op_conv);
         self.node_registry.insert("LayerNormalization".into(), Self::op_layer_normalization);
         self.node_registry.insert("Gemm".into(), Self::op_gemm);
+        
+        // Sequence operators
+        self.node_registry.insert("SequenceAt".into(), Self::op_sequence_at);
+        self.node_registry.insert("SequenceConstruct".into(), Self::op_sequence_construct);
+        self.node_registry.insert("SequenceEmpty".into(), Self::op_sequence_empty);
+        self.node_registry.insert("SequenceErase".into(), Self::op_sequence_erase);
+        self.node_registry.insert("SequenceInsert".into(), Self::op_sequence_insert);
+        self.node_registry.insert("SequenceLength".into(), Self::op_sequence_length);
+        
+        // Map operators
+        self.node_registry.insert("MapFromTensor".into(), Self::op_map_from_tensor);
+        self.node_registry.insert("MapToTensor".into(), Self::op_map_to_tensor);
+        self.node_registry.insert("MapGet".into(), Self::op_map_get);
+        self.node_registry.insert("MapHasKey".into(), Self::op_map_has_key);
+        self.node_registry.insert("MapKeys".into(), Self::op_map_keys);
+        
+        // Control flow operators (improved)
+        self.node_registry.insert("If".into(), Self::op_if);
+        self.node_registry.insert("Loop".into(), Self::op_loop);
+        self.node_registry.insert("Scan".into(), Self::op_scan);
+        
+        // Other operators
         self.node_registry.insert("CumSum".into(), Self::op_cumsum);
-    self.node_registry.insert("NonZero".into(), Self::op_nonzero);
-    self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
-    self.node_registry.insert("Conv".into(), Self::op_conv);
-    self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
-    self.node_registry.insert("LSTM".into(), Self::op_lstm);
-    self.node_registry.insert("STFT".into(), Self::op_stft);
-    self.node_registry.insert("Resize".into(), Self::op_resize);
+        self.node_registry.insert("NonZero".into(), Self::op_nonzero);
+        self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
+        self.node_registry.insert("Conv".into(), Self::op_conv);
+        self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
+        self.node_registry.insert("LSTM".into(), Self::op_lstm);
+        self.node_registry.insert("STFT".into(), Self::op_stft);
+        self.node_registry.insert("Resize".into(), Self::op_resize);
     }
 fn op_resize(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
     let input = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Resize requires input tensor"))?)?;
@@ -2931,4 +3004,384 @@ fn main() -> Result<()> {
 //         None => println!("Error: 'predictions' output not found"),
 //     }
     Ok(())
-}
+} 
+   // Sequence Operators Implementation
+    fn op_sequence_at(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // SequenceAt extracts a tensor from a sequence at a given position
+        let sequence = match inputs.get(0) {
+            Some(OrtValue::Sequence(seq)) => seq,
+            _ => return Err(OrtError::TypeMismatch("SequenceAt requires a sequence as first input")),
+        };
+        
+        let position = match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                i64::from_le_bytes(data[..8].try_into().unwrap())
+            },
+            _ => return Err(OrtError::TypeMismatch("SequenceAt requires an Int64 position tensor as second input")),
+        };
+        
+        let pos = if position < 0 {
+            (sequence.len() as i64 + position) as usize
+        } else {
+            position as usize
+        };
+        
+        if pos >= sequence.len() {
+            return Err(OrtError::IndexError("Position out of bounds in SequenceAt"));
+        }
+        
+        Ok(sequence[pos].clone())
+    }
+    
+    fn op_sequence_construct(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // SequenceConstruct creates a sequence from input tensors
+        if inputs.is_empty() {
+            return Err(OrtError::InvalidTensorData("SequenceConstruct requires at least one input tensor".into()));
+        }
+        
+        Ok(OrtValue::Sequence(inputs.to_vec()))
+    }
+    
+    fn op_sequence_empty(node: &NodeProto, _inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // SequenceEmpty creates an empty sequence
+        // Optional attribute 'dtype' specifies the element type (not used in this implementation)
+        let _dtype = node.attributes.iter()
+            .find(|a| a.name == "dtype")
+            .map(|a| a.i)
+            .unwrap_or(1); // Default to float
+            
+        Ok(OrtValue::Sequence(Vec::new()))
+    }
+    
+    fn op_sequence_erase(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // SequenceErase removes a tensor from a sequence at a given position
+        let sequence = match inputs.get(0) {
+            Some(OrtValue::Sequence(seq)) => seq.clone(),
+            _ => return Err(OrtError::TypeMismatch("SequenceErase requires a sequence as first input")),
+        };
+        
+        let position = match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                i64::from_le_bytes(data[..8].try_into().unwrap())
+            },
+            _ => return Err(OrtError::TypeMismatch("SequenceErase requires an Int64 position tensor as second input")),
+        };
+        
+        let pos = if position < 0 {
+            (sequence.len() as i64 + position) as usize
+        } else {
+            position as usize
+        };
+        
+        if pos >= sequence.len() {
+            return Err(OrtError::IndexError("Position out of bounds in SequenceErase"));
+        }
+        
+        let mut result = sequence.clone();
+        result.remove(pos);
+        
+        Ok(OrtValue::Sequence(result))
+    }
+    
+    fn op_sequence_insert(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // SequenceInsert inserts a tensor into a sequence at a given position
+        let sequence = match inputs.get(0) {
+            Some(OrtValue::Sequence(seq)) => seq.clone(),
+            _ => return Err(OrtError::TypeMismatch("SequenceInsert requires a sequence as first input")),
+        };
+        
+        let tensor = match inputs.get(1) {
+            Some(tensor) => tensor.clone(),
+            _ => return Err(OrtError::TypeMismatch("SequenceInsert requires a tensor as second input")),
+        };
+        
+        let position = if inputs.len() > 2 {
+            match inputs.get(2) {
+                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                    i64::from_le_bytes(data[..8].try_into().unwrap())
+                },
+                _ => return Err(OrtError::TypeMismatch("SequenceInsert requires an Int64 position tensor as third input")),
+            }
+        } else {
+            sequence.len() as i64 // Default to append
+        };
+        
+        let pos = if position < 0 {
+            (sequence.len() as i64 + position) as usize
+        } else {
+            position as usize
+        };
+        
+        if pos > sequence.len() {
+            return Err(OrtError::IndexError("Position out of bounds in SequenceInsert"));
+        }
+        
+        let mut result = sequence.clone();
+        result.insert(pos, tensor);
+        
+        Ok(OrtValue::Sequence(result))
+    }
+    
+    fn op_sequence_length(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // SequenceLength returns the length of a sequence
+        let sequence = match inputs.get(0) {
+            Some(OrtValue::Sequence(seq)) => seq,
+            _ => return Err(OrtError::TypeMismatch("SequenceLength requires a sequence as input")),
+        };
+        
+        let length = sequence.len() as i64;
+        let data = length.to_le_bytes().to_vec();
+        
+        Ok(OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(1)],
+            dtype: DataType::Int64,
+            data: Arc::new(data),
+        })
+    }
+    
+    // Map Operators Implementation
+    fn op_map_from_tensor(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // MapFromTensor creates a map from key and value tensors
+        let keys = match inputs.get(0) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                data.chunks(8).map(|c| MapKey::Int64(i64::from_le_bytes(c.try_into().unwrap()))).collect::<Vec<_>>()
+            },
+            Some(OrtValue::Tensor { dtype: DataType::String, data, .. }) => {
+                // Simple implementation - assumes each 8 bytes is a string length followed by string data
+                let mut keys = Vec::new();
+                let mut i = 0;
+                while i < data.len() {
+                    let len = u64::from_le_bytes(data[i..i+8].try_into().unwrap()) as usize;
+                    i += 8;
+                    if i + len > data.len() {
+                        break;
+                    }
+                    let s = String::from_utf8_lossy(&data[i..i+len]).to_string();
+                    keys.push(MapKey::String(s));
+                    i += len;
+                }
+                keys
+            },
+            _ => return Err(OrtError::TypeMismatch("MapFromTensor requires keys tensor as first input")),
+        };
+        
+        let values = match inputs.get(1) {
+            Some(value_tensor @ OrtValue::Tensor { .. }) => {
+                // For simplicity, we'll assume the values tensor can be split evenly among the keys
+                let shape = value_tensor.shape();
+                if shape.is_empty() {
+                    return Err(OrtError::InvalidTensorData("Values tensor must have at least one dimension".into()));
+                }
+                
+                // Extract values based on the first dimension
+                let mut values = Vec::new();
+                // This is a simplified implementation - in a real implementation, we would need to split the tensor properly
+                values.push(value_tensor.clone());
+                values
+            },
+            _ => return Err(OrtError::TypeMismatch("MapFromTensor requires values tensor as second input")),
+        };
+        
+        if keys.len() != values.len() {
+            return Err(OrtError::InvalidTensorData(format!(
+                "Number of keys ({}) must match number of values ({})",
+                keys.len(), values.len()
+            )));
+        }
+        
+        let mut map = IndexMap::new();
+        for (key, value) in keys.into_iter().zip(values.into_iter()) {
+            map.insert(key, value);
+        }
+        
+        Ok(OrtValue::Map(map))
+    }
+    
+    fn op_map_to_tensor(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // MapToTensor converts a map to key and value tensors
+        let map = match inputs.get(0) {
+            Some(OrtValue::Map(map)) => map,
+            _ => return Err(OrtError::TypeMismatch("MapToTensor requires a map as input")),
+        };
+        
+        // Extract keys
+        let keys: Vec<_> = map.keys().collect();
+        
+        // Create key tensor
+        let key_tensor = match keys.first() {
+            Some(MapKey::Int64(_)) => {
+                let data: Vec<u8> = keys.iter().flat_map(|k| {
+                    if let MapKey::Int64(i) = k {
+                        i.to_le_bytes().to_vec()
+                    } else {
+                        vec![] // Should not happen if all keys are the same type
+                    }
+                }).collect();
+                
+                OrtValue::Tensor {
+                    shape: vec![Dimensions::Fixed(keys.len())],
+                    dtype: DataType::Int64,
+                    data: Arc::new(data),
+                }
+            },
+            Some(MapKey::String(_)) => {
+                // Simple implementation - concatenate all strings with their lengths
+                let mut data = Vec::new();
+                for k in keys {
+                    if let MapKey::String(s) = k {
+                        let bytes = s.as_bytes();
+                        let len = bytes.len() as u64;
+                        data.extend_from_slice(&len.to_le_bytes());
+                        data.extend_from_slice(bytes);
+                    }
+                }
+                
+                OrtValue::Tensor {
+                    shape: vec![Dimensions::Fixed(keys.len())],
+                    dtype: DataType::String,
+                    data: Arc::new(data),
+                }
+            },
+            None => {
+                // Empty map
+                OrtValue::Tensor {
+                    shape: vec![Dimensions::Fixed(0)],
+                    dtype: DataType::Int64, // Default
+                    data: Arc::new(Vec::new()),
+                }
+            },
+        };
+        
+        // Create value tensor - simplified implementation
+        // In a real implementation, we would need to combine all values into a single tensor
+        let value_tensor = if let Some(first_value) = map.values().next() {
+            first_value.clone()
+        } else {
+            // Empty map
+            OrtValue::Tensor {
+                shape: vec![Dimensions::Fixed(0)],
+                dtype: DataType::Float, // Default
+                data: Arc::new(Vec::new()),
+            }
+        };
+        
+        // Return both tensors as a sequence
+        Ok(OrtValue::Sequence(vec![key_tensor, value_tensor]))
+    }
+    
+    fn op_map_get(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // MapGet retrieves a value from a map by key
+        let map = match inputs.get(0) {
+            Some(OrtValue::Map(map)) => map,
+            _ => return Err(OrtError::TypeMismatch("MapGet requires a map as first input")),
+        };
+        
+        let key = match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                MapKey::Int64(i64::from_le_bytes(data[..8].try_into().unwrap()))
+            },
+            Some(OrtValue::Tensor { dtype: DataType::String, data, .. }) => {
+                // Simple implementation - assumes the tensor contains a single string
+                MapKey::String(String::from_utf8_lossy(data).to_string())
+            },
+            _ => return Err(OrtError::TypeMismatch("MapGet requires a key tensor as second input")),
+        };
+        
+        match map.get(&key) {
+            Some(value) => Ok(value.clone()),
+            None => {
+                // Return default value if provided, otherwise error
+                if inputs.len() > 2 {
+                    Ok(inputs[2].clone())
+                } else {
+                    Err(OrtError::IndexError("Key not found in map"))
+                }
+            }
+        }
+    }
+    
+    fn op_map_has_key(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // MapHasKey checks if a key exists in a map
+        let map = match inputs.get(0) {
+            Some(OrtValue::Map(map)) => map,
+            _ => return Err(OrtError::TypeMismatch("MapHasKey requires a map as first input")),
+        };
+        
+        let key = match inputs.get(1) {
+            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                MapKey::Int64(i64::from_le_bytes(data[..8].try_into().unwrap()))
+            },
+            Some(OrtValue::Tensor { dtype: DataType::String, data, .. }) => {
+                // Simple implementation - assumes the tensor contains a single string
+                MapKey::String(String::from_utf8_lossy(data).to_string())
+            },
+            _ => return Err(OrtError::TypeMismatch("MapHasKey requires a key tensor as second input")),
+        };
+        
+        let has_key = map.contains_key(&key) as i64;
+        let data = has_key.to_le_bytes().to_vec();
+        
+        Ok(OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(1)],
+            dtype: DataType::Int64,
+            data: Arc::new(data),
+        })
+    }
+    
+    fn op_map_keys(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // MapKeys returns all keys in a map
+        let map = match inputs.get(0) {
+            Some(OrtValue::Map(map)) => map,
+            _ => return Err(OrtError::TypeMismatch("MapKeys requires a map as input")),
+        };
+        
+        // Extract keys
+        let keys: Vec<_> = map.keys().collect();
+        
+        // Create key tensor
+        let key_tensor = match keys.first() {
+            Some(MapKey::Int64(_)) => {
+                let data: Vec<u8> = keys.iter().flat_map(|k| {
+                    if let MapKey::Int64(i) = k {
+                        i.to_le_bytes().to_vec()
+                    } else {
+                        vec![] // Should not happen if all keys are the same type
+                    }
+                }).collect();
+                
+                OrtValue::Tensor {
+                    shape: vec![Dimensions::Fixed(keys.len())],
+                    dtype: DataType::Int64,
+                    data: Arc::new(data),
+                }
+            },
+            Some(MapKey::String(_)) => {
+                // Simple implementation - concatenate all strings with their lengths
+                let mut data = Vec::new();
+                for k in keys {
+                    if let MapKey::String(s) = k {
+                        let bytes = s.as_bytes();
+                        let len = bytes.len() as u64;
+                        data.extend_from_slice(&len.to_le_bytes());
+                        data.extend_from_slice(bytes);
+                    }
+                }
+                
+                OrtValue::Tensor {
+                    shape: vec![Dimensions::Fixed(keys.len())],
+                    dtype: DataType::String,
+                    data: Arc::new(data),
+                }
+            },
+            None => {
+                // Empty map
+                OrtValue::Tensor {
+                    shape: vec![Dimensions::Fixed(0)],
+                    dtype: DataType::Int64, // Default
+                    data: Arc::new(Vec::new()),
+                }
+            },
+        };
+        
+        Ok(key_tensor)
+    }

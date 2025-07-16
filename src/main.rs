@@ -2,6 +2,13 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(test)]
+mod tests {
+    pub mod tensor_ops_test;
+    pub mod parser_test;
+    pub mod onnx_model_test;
+}
+
 // Static counter for node indexing
 static NODE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 use anyhow::Result;
@@ -808,12 +815,19 @@ impl ShapeInference {
 
    fn infer_node_shapes(&self, node: &NodeProto, input_shapes: &[Vec<Dimensions>]) -> OrtResult<Vec<Vec<Dimensions>>> {
     match node.op_type.as_str() {
+        "Identity" => {
+            // Identity op returns the same shape as input
+            if input_shapes.is_empty() {
+                return Err(OrtError::MissingInput("Identity requires an input".to_string()));
+            }
+            Ok(vec![input_shapes[0].clone()])
+        },
         "Shape" => {
             // Shape op returns the shape of the input tensor as a 1D tensor
             // Output shape: [rank of input]
             let rank = input_shapes[0].len();
             Ok(vec![vec![Dimensions::Fixed(rank)]])
-        }
+        },
         "Add" | "Sub" | "Mul" | "Div" => {
             // Element-wise operations require matching shapes
             if input_shapes[0] != input_shapes[1] {

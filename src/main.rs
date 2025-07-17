@@ -2,6 +2,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod infer_direct;
+pub use infer_direct::{infer_with_tokens_and_style, run_example_inference};
+
 #[cfg(test)]
 mod tests {
     pub mod tensor_ops_test;
@@ -4682,6 +4685,7 @@ let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
     }
 
     // Convert blended_style to raw bytes for OrtValue::Tensor
+    // let flat_data: Vec<f32> = blended_style.into_iter().flatten().collect();
     let flat_data: Vec<f32> = blended_style.into_iter().flatten().collect();
     let data_bytes: Vec<u8> = flat_data
         .into_iter()

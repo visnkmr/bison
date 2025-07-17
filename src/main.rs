@@ -28,7 +28,7 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
-use ndarray::{Array, Array2, Array3, Array4, ArrayD, Axis, Dimension};
+use ndarray::{Array, Array2, Array3, Array4, ArrayD, Axis, Dimension, Zip};
 use num_traits::{Float, ToBytes};
 
 // Simplified ONNX type definitions
@@ -3220,8 +3220,10 @@ fn op_embedding(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         let mut result_idx = idx.slice().to_vec();
         result_idx.push(0); // Add dimension for embedding vector
         
+        
         for i in 0..embedding_size {
-            result_idx[result_idx.len() - 1] = i;
+            let lenidx=result_idx.len();
+            result_idx[lenidx - 1 as usize] = i;
             result[&result_idx[..]] = embedding[i];
         }
     }
@@ -3305,25 +3307,20 @@ fn op_layer_normalization_with_epsilon(node: &NodeProto, inputs: &[OrtValue]) ->
         .ok_or_else(|| OrtError::InvalidTensorData("LayerNormalization mean error".into()))?;
     
     // Calculate variance along the specified axis
+    let mean_squared = mean.mapv(|m| m * m); // Compute mu^2 once
     let var = array.mapv(|x| x * x)
         .mean_axis(Axis(axis))
         .ok_or_else(|| OrtError::InvalidTensorData("LayerNormalization variance error".into()))?
-        .mapv(|x| x - mean.mapv(|m| m * m));
+        - &mean_squared; // Element-wise subtraction
     
-    // Normalize the input
-    let mut result = array.clone();
-    
-    // Apply normalization for each element
-    for idx in ndarray::indices(array.shape()) {
-        let mut mean_idx = idx.slice().to_vec();
-        mean_idx.remove(axis);
-        
-        let m = mean[&mean_idx[..]];
-        let v = var[&mean_idx[..]] + epsilon;
-        
-        let yui = (array[idx.slice()] - m) / v.sqrt();
-        result[idx.slice()] = yui;
+    // Check for negative variance
+    if var.iter().any(|&v| v + epsilon < 0.0) {
+        return Err(OrtError::InvalidTensorData("Negative variance detected".into()));
     }
+
+    // Vectorized normalization
+    let mut result = &array - &mean;
+    result /= &(&var + epsilon).mapv(|x| x.sqrt());
     
     // Apply scale and bias
     if scale.ndim() > 0 {
@@ -4142,13 +4139,13 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
                 let mut full_idx = idx.slice().to_vec();
                 full_idx.push(i);
                 
-                let diff = array[&full_idx[..]] - mean[&idx.slice()];
+                let diff = array[&full_idx[..]] - mean[idx.slice()];
                 sum_squared_diff += diff * diff;
                 count += 1;
             }
             
             // Calculate variance
-            var[&idx.slice()] = sum_squared_diff / count as f32;
+            var[idx.slice()] = sum_squared_diff / count as f32;
         }
         
         // Normalize the input: (x - mean) / sqrt(var + epsilon)
@@ -4160,15 +4157,15 @@ fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
             mean_idx.pop(); // Remove last dimension for mean/var indexing
             
             // Normalize
-            let normalized = (array[&idx.slice()] - mean[&mean_idx[..]]) / 
+            let normalized = (array[idx.slice()] - mean[&mean_idx[..]]) / 
                              (var[&mean_idx[..]] + epsilon).sqrt();
             
             // Scale and shift
-            result[&idx.slice()] = normalized * scale[last_dim];
+            result[idx.slice()] = normalized * scale[last_dim];
             
             // Add bias if provided
             if let Some(ref b) = bias {
-                result[&idx.slice()] += b[last_dim];
+                result[idx.slice()] += b[last_dim];
             }
         }
         
@@ -4605,7 +4602,7 @@ fn parse_int64_data(proto: &TensorProto, count: usize) -> OrtResult<Vec<u8>> {
 }
 
 fn main() -> Result<()> {
-     OrtEngine::print_model_info("./kokoro-v1.0.onnx")?;
+    //  OrtEngine::print_model_info("./kokoro-v1.0.onnx")?;
     let engine = OrtEngine::new("./kokoro-v1.0.onnx")?;
 let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
     let mut voices = HashMap::new();

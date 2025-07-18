@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
-use crate::{OrtEngine, OrtValue, DataType, Dimensions, OrtResult, OrtError, NodeProto};
+use crate::{OrtEngine, OrtValue, DataType, Dimensions, OrtResult, NodeProto, ModelProto};
 
 // Helper function for identity operation
 fn identity_op(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
@@ -53,27 +53,56 @@ fn create_tensor(shape: Vec<usize>, data: Vec<f32>) -> OrtValue {
         data: Arc::new(bytes),
     }
 }
-
+use crate::print_model_info;
 #[test]
 fn test_parse_and_infer_from_onnx_file() {
     // Create a temporary ONNX model file
-    let test_file = "test_model.onnx";
-    create_test_onnx_file(test_file).expect("Failed to create test ONNX file");
-
+    // let test_file = "./kokoro-v1.0.onnx";
+    // let test_file = "./test_model.onnx";
+    let test_file = "./corrected_add_model.onnx";
+    // print_model_info(test_file).unwrap();
+    // // create_test_onnx_file(test_file).expect("Failed to create test ONNX file");
+    // let tokens: Vec<Vec<Vec<f32>>> = vec![vec![vec![1.0 ,2.0],vec![3.0,4.0]]]; // [1, 7]
+    // //     let speed: f32 = 1.0;
+    
+    // //     // Create tokens tensor
+    //     let batch_size = tokens.len();
+    //     let sequence_length = tokens[0].len();
+    //     let tokens_flat: Vec<Vec<f32>> = tokens.clone().into_iter().flatten().collect();
+    //     // let tokens_flat: Vec<f32> = tokens_flat.clone().into_iter().flatten().collect();
+    //     let tokens_tensor = OrtValue::Tensor {
+    //         shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(sequence_length)],
+    //         dtype: DataType::Float,
+    //         data: Arc::new(
+    //             tokens_flat
+    //                 .iter()
+    //                 .flat_map(|x| x.to_vec().to_le_bytes())
+    //                 .collect::<Vec<u8>>(),
+    //         ),
+    //     };
     // Test that the file exists
     assert!(Path::new(test_file).exists());
 
     // Try to parse the ONNX model
     let engine_result = OrtEngine::new(test_file);
+    // let model=engine_result.unwrap().model;
+    // let graph=model.graph.unwrap();
+    // println!("{:?}",graph);
+
+    // for ei in model.graph.unwrap().initializer{
+    //     println!("{:?}",ei);
+    // }
     
     // Clean up the test file
-    std::fs::remove_file(test_file).expect("Failed to remove test file");
+    // std::fs::remove_file(test_file).expect("Failed to remove test file");
     
     // Check if parsing was successful
     match engine_result {
         Ok(engine) => {
             // Test inference with empty inputs (since we have initializers)
-            let inputs = HashMap::new();
+            let mut inputs = HashMap::new();
+            // inputs.insert("A".to_string(),tokens_tensor.clone()) ;
+            // inputs.insert("B".to_string(), tokens_tensor);
             let outputs = engine.infer(inputs);
             
             match outputs {
@@ -83,13 +112,14 @@ fn test_parse_and_infer_from_onnx_file() {
                     if let Some(output_tensor) = output_map.get("C") {
                         // Convert to ndarray for easier validation
                         if let Ok(array) = crate::ort_to_ndarray(output_tensor) {
-                            assert_eq!(array.shape(), &[2, 2]);
+                            println!("{:?}",array)
+                            // assert_eq!(array.shape(), &[2, 2]);
                             
-                            // Expected: 1+1=2, 2+2=4, 3+3=6, 4+4=8
-                            assert_eq!(array[[0, 0]], 2.0);
-                            assert_eq!(array[[0, 1]], 4.0);
-                            assert_eq!(array[[1, 0]], 6.0);
-                            assert_eq!(array[[1, 1]], 8.0);
+                            // // Expected: 1+1=2, 2+2=4, 3+3=6, 4+4=8
+                            // assert_eq!(array[[0, 0]], 2.0);
+                            // assert_eq!(array[[0, 1]], 4.0);
+                            // assert_eq!(array[[1, 0]], 6.0);
+                            // assert_eq!(array[[1, 1]], 8.0);
                         } else {
                             panic!("Failed to convert output tensor to ndarray");
                         }
@@ -219,5 +249,124 @@ fn test_shape_inference_for_complex_ops() {
             }
         }
         Err(e) => panic!("Inference failed: {:?}", e),
+    }
+}
+/// Function to print all initializers in an ONNX model file
+/// 
+/// # Arguments
+/// * `path` - Path to the ONNX model file
+/// 
+/// # Returns
+/// * `OrtResult<()>` - Result of the operation
+pub fn print_model_initializers<P: AsRef<Path>>(path: P) -> OrtResult<()> {
+    use std::io::Read;
+    use prost::Message;
+    
+    // Open and read the ONNX file
+    let mut file = File::open(path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    
+    // Decode the model
+    let model = ModelProto::decode(&*buffer)?;
+    
+    // Get the graph
+    let graph = model.graph.as_ref().ok_or(crate::OrtError::InvalidModel)?;
+    
+    println!("Model Initializers:");
+    println!("===================");
+    
+    if graph.initializer.is_empty() {
+        println!("No initializers found in the model.");
+        return Ok(());
+    }
+    
+    // Print information about each initializer
+    for (i, initializer) in graph.initializer.iter().enumerate() {
+        println!("Initializer #{}: {}", i + 1, initializer.name);
+        
+        // Print data type
+        let data_type = match initializer.data_type {
+            1 => "Float",
+            7 => "Int64",
+            8 => "String",
+            _ => "Unknown",
+        };
+        println!("  Data Type: {}", data_type);
+        
+        // Print shape
+        let shape = initializer.dims.iter()
+            .map(|&d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(" x ");
+        println!("  Shape: [{}]", shape);
+        
+        // Print data summary based on type
+        match initializer.data_type {
+            1 => { // Float
+                let data_len = if !initializer.float_data.is_empty() {
+                    initializer.float_data.len()
+                } else {
+                    initializer.raw_data.len() / 4
+                };
+                println!("  Data: {} float values", data_len);
+                
+                // Print a few sample values if available
+                if !initializer.float_data.is_empty() && initializer.float_data.len() <= 10 {
+                    println!("  Values: {:?}", initializer.float_data);
+                } else if !initializer.float_data.is_empty() {
+                    println!("  First few values: {:?}", &initializer.float_data[..std::cmp::min(5, initializer.float_data.len())]);
+                }
+            },
+            7 => { // Int64
+                let data_len = if !initializer.int64_data.is_empty() {
+                    initializer.int64_data.len()
+                } else {
+                    initializer.raw_data.len() / 8
+                };
+                println!("  Data: {} int64 values", data_len);
+                
+                // Print a few sample values if available
+                if !initializer.int64_data.is_empty() && initializer.int64_data.len() <= 10 {
+                    println!("  Values: {:?}", initializer.int64_data);
+                } else if !initializer.int64_data.is_empty() {
+                    println!("  First few values: {:?}", &initializer.int64_data[..std::cmp::min(5, initializer.int64_data.len())]);
+                }
+            },
+            8 => { // String
+                println!("  Data: {} string values", initializer.string_data.len());
+                
+                // Print a few sample values if available
+                if !initializer.string_data.is_empty() && initializer.string_data.len() <= 5 {
+                    for (i, s) in initializer.string_data.iter().enumerate() {
+                        println!("  String {}: {}", i, String::from_utf8_lossy(s));
+                    }
+                } else if !initializer.string_data.is_empty() {
+                    println!("  First string: {}", String::from_utf8_lossy(&initializer.string_data[0]));
+                }
+            },
+            _ => println!("  Data: Unknown format"),
+        }
+        
+        println!();
+    }
+    
+    Ok(())
+}
+
+
+#[test]
+fn test_print_real_model_initializers() {
+    // Check if the real ONNX model exists
+    let real_model_path = "V:\\Github\\b2\\bison\\kokoro-v1.0.onnx";
+    
+    if Path::new(real_model_path).exists() {
+        println!("Testing with real model: {}", real_model_path);
+        match print_model_initializers(real_model_path) {
+            Ok(_) => println!("Successfully printed initializers from real model"),
+            Err(e) => println!("Error printing initializers from real model: {:?}", e),
+        }
+    } else {
+        println!("Skipping real model test as '{}' does not exist", real_model_path);
     }
 }

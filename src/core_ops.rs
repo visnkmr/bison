@@ -2703,77 +2703,135 @@ impl OrtEngine{
             Ok(ndarray_to_ort(result, DataType::Float))
         }
     
-    pub fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-        let tensor = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Slice requires data tensor"))?;
-        let array = match tensor {
-            OrtValue::Tensor { dtype: DataType::Float, .. } => ort_to_ndarray(tensor)?,
-            OrtValue::Tensor { dtype: DataType::Int64, .. } => {
-                return Err(OrtError::TypeMismatch("Slice requires first input to be a float tensor"))
+        pub fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+            println!("------------------>{:?}",node);
+            let tensor = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Slice requires data tensor"))?;
+            let array = match tensor {
+                OrtValue::Tensor { dtype: DataType::Float, .. } => ort_to_ndarray(tensor)?,
+                OrtValue::Tensor { dtype: DataType::Int32, .. } => ort_to_ndarray(tensor)?,
+                OrtValue::Tensor { dtype: DataType::Int64, .. } => {
+                    return Err(OrtError::TypeMismatch("Slice requires first input to be a float or int32 tensor"))
+                }
+                OrtValue::Tensor { dtype: DataType::String, .. } => {
+                    return Err(OrtError::TypeMismatch("Slice requires first input to be a float or int32 tensor"))
+                }
+                OrtValue::Sequence(_) | OrtValue::Map(_) | OrtValue::Opaque(_) => {
+                    return Err(OrtError::TypeMismatch("Slice requires first input to be a tensor"))
+                }
+            };
+            let starts = match inputs.get(1) {
+                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                    data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                Some(OrtValue::Tensor { dtype: DataType::Int32, data, .. }) => {
+                    data.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                Some(OrtValue::Tensor { dtype: DataType::Float, .. }) | Some(OrtValue::Tensor { dtype: DataType::String, .. }) => {
+                    return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 starts"))
+                }
+                Some(OrtValue::Sequence(_)) | Some(OrtValue::Map(_)) | Some(OrtValue::Opaque(_)) => {
+                    return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 starts"))
+                }
+                _ => return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 starts")),
+            };
+            let ends = match inputs.get(2) {
+                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                    data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                Some(OrtValue::Tensor { dtype: DataType::Int32, data, .. }) => {
+                    data.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                Some(OrtValue::Tensor { dtype: DataType::Float, .. }) | Some(OrtValue::Tensor { dtype: DataType::String, .. }) => {
+                    return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 ends"))
+                }
+                Some(OrtValue::Sequence(_)) | Some(OrtValue::Map(_)) | Some(OrtValue::Opaque(_)) => {
+                    return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 ends"))
+                }
+                _ => return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 ends")),
+            };
+            let axes = match inputs.get(3) {
+                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                    data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                Some(OrtValue::Tensor { dtype: DataType::Int32, data, .. }) => {
+                    data.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                Some(OrtValue::Tensor { dtype: DataType::Float, .. }) | Some(OrtValue::Tensor { dtype: DataType::String, .. }) => {
+                    return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 axes"))
+                }
+                Some(OrtValue::Sequence(_)) | Some(OrtValue::Map(_)) | Some(OrtValue::Opaque(_)) => {
+                    return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 axes"))
+                }
+                None => (0..starts.len()).collect(),
+            };
+            let steps = match inputs.get(4) {
+                Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
+                    data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                Some(OrtValue::Tensor { dtype: DataType::Int32, data, .. }) => {
+                    data.chunks(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
+                }
+                Some(OrtValue::Tensor { dtype: DataType::Float, .. }) | Some(OrtValue::Tensor { dtype: DataType::String, .. }) => {
+                    return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 steps"))
+                }
+                Some(OrtValue::Sequence(_)) | Some(OrtValue::Map(_)) | Some(OrtValue::Opaque(_)) => {
+                    return Err(OrtError::TypeMismatch("Slice requires Int64 or Int32 steps"))
+                }
+                None => vec![1; starts.len()],
+            };
+            let mut result = array;
+            for (start, end, axis, step) in starts.iter().zip(ends.iter()).zip(axes.iter()).zip(steps.iter()).map(|(((&start, &end), &axis), &step)| (start, end, axis, step)) {
+                // Validate axis
+                if axis >= result.ndim() {
+                    return Err(OrtError::InvalidTensorData(format!(
+                        "Axis {} is out of bounds for tensor with {} dimensions",
+                        axis, result.ndim()
+                    )));
+                }
+
+                // Get the length of the axis
+                let axis_len = result.shape()[axis];
+
+                // Validate start and end
+                if start >= axis_len {
+                    return Err(OrtError::InvalidTensorData(format!(
+                        "Start index {} is out of bounds for axis {} with length {}",
+                        start, axis, axis_len
+                    )));
+                }
+                if end > axis_len {
+                    return Err(OrtError::InvalidTensorData(format!(
+                        "End index {} is out of bounds for axis {} with length {}",
+                        end, axis, axis_len
+                    )));
+                }
+
+                // Validate step
+                if step == 0 {
+                    return Err(OrtError::InvalidTensorData(
+                        "Step cannot be zero".into()
+                    ));
+                }
+
+                // Convert to isize safely
+                let start_isize = start as isize;
+                let end_isize = end as isize;
+                let step_isize = step as isize;
+
+                // Additional check for negative or overflowed values
+                if start_isize < 0 || end_isize < 0 || end_isize > axis_len as isize {
+                    return Err(OrtError::InvalidTensorData(format!(
+                        "Invalid slice range: start={} or end={} is invalid for axis length {}",
+                        start_isize, end_isize, axis_len
+                    )));
+                }
+
+                let slice = ndarray::Slice::from(start_isize..end_isize).step_by(step_isize);
+                result = result.slice_axis(Axis(axis), slice).to_owned();
             }
-            OrtValue::Tensor { dtype: DataType::String, .. } => {
-                return Err(OrtError::TypeMismatch("Slice requires first input to be a float tensor"))
-            }
-            OrtValue::Sequence(_) | OrtValue::Map(_) | OrtValue::Opaque(_) => {
-                return Err(OrtError::TypeMismatch("Slice requires first input to be a tensor"))
-            }
-        };
-        let starts = match inputs.get(1) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
-            }
-            Some(OrtValue::Tensor { dtype: DataType::Float, .. }) | Some(OrtValue::Tensor { dtype: DataType::String, .. }) => {
-                return Err(OrtError::TypeMismatch("Slice requires Int64 starts"))
-            }
-            Some(OrtValue::Sequence(_)) | Some(OrtValue::Map(_)) | Some(OrtValue::Opaque(_)) => {
-                return Err(OrtError::TypeMismatch("Slice requires Int64 starts"))
-            }
-            _ => return Err(OrtError::TypeMismatch("Slice requires Int64 starts")),
-        };
-        let ends = match inputs.get(2) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
-            }
-            Some(OrtValue::Tensor { dtype: DataType::Float, .. }) | Some(OrtValue::Tensor { dtype: DataType::String, .. }) => {
-                return Err(OrtError::TypeMismatch("Slice requires Int64 ends"))
-            }
-            Some(OrtValue::Sequence(_)) | Some(OrtValue::Map(_)) | Some(OrtValue::Opaque(_)) => {
-                return Err(OrtError::TypeMismatch("Slice requires Int64 ends"))
-            }
-            _ => return Err(OrtError::TypeMismatch("Slice requires Int64 ends")),
-        };
-        let axes = match inputs.get(3) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
-            }
-            Some(OrtValue::Tensor { dtype: DataType::Float, .. }) | Some(OrtValue::Tensor { dtype: DataType::String, .. }) => {
-                return Err(OrtError::TypeMismatch("Slice requires Int64 axes"))
-            }
-            Some(OrtValue::Sequence(_)) | Some(OrtValue::Map(_)) | Some(OrtValue::Opaque(_)) => {
-                return Err(OrtError::TypeMismatch("Slice requires Int64 axes"))
-            }
-            None => (0..starts.len()).collect(),
-        };
-        let steps = match inputs.get(4) {
-            Some(OrtValue::Tensor { dtype: DataType::Int64, data, .. }) => {
-                data.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize).collect::<Vec<_>>()
-            }
-            Some(OrtValue::Tensor { dtype: DataType::Float, .. }) | Some(OrtValue::Tensor { dtype: DataType::String, .. }) => {
-                return Err(OrtError::TypeMismatch("Slice requires Int64 steps"))
-            }
-            Some(OrtValue::Sequence(_)) | Some(OrtValue::Map(_)) | Some(OrtValue::Opaque(_)) => {
-                return Err(OrtError::TypeMismatch("Slice requires Int64 steps"))
-            }
-            None => vec![1; starts.len()],
-        };
-        let mut result = array;
-        for (start, end, axis, step) in starts.iter().zip(ends.iter()).zip(axes.iter()).zip(steps.iter()).map(|(((&start, &end), &axis), &step)| (start, end, axis, step)) {
-            let slice = ndarray::Slice::from(start as isize..end as isize).step_by(step as isize);
-            result = result.slice_axis(Axis(axis), slice).to_owned();
+
+            Ok(ndarray_to_ort(result, DataType::Float))
         }
-        Ok(ndarray_to_ort(result, DataType::Float))
-    }
-       
-    
         pub fn op_where(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
             let condition = ort_to_ndarray(inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Where requires condition tensor"))?)?;
             let x = ort_to_ndarray(inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Where requires x tensor"))?)?;

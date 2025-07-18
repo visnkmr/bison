@@ -14,7 +14,7 @@ mod tests {
 }
 
 // Static counter for node indexing
-static NODE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+// static NODE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 use anyhow::Result;
 use indexmap::IndexMap;
 use prost::Message;
@@ -37,6 +37,7 @@ use num_traits::{Float, ToBytes};
 pub enum DataType {
     Float,
     Int64,
+    Int32,
     String,
 }
 
@@ -44,6 +45,7 @@ impl DataType {
     fn try_from(value: i32) -> Result<Self, OrtError> {
         match value {
             1 => Ok(DataType::Float),
+            6 => Ok(DataType::Int32),
             7 => Ok(DataType::Int64),
             8 => Ok(DataType::String),
             other => Err(OrtError::UnknownDataType(other)),
@@ -59,6 +61,7 @@ pub struct TensorProto {
     pub dims: Vec<i64>,
     pub float_data: Vec<f32>,
     pub int64_data: Vec<i64>,
+    pub int32_data: Vec<i32>,
     pub string_data: Vec<Vec<u8>>,
     pub raw_data: Vec<u8>,
 }
@@ -151,9 +154,18 @@ impl Message for OpSetImport {
         ctx: prost::encoding::DecodeContext,
     ) -> Result<(), prost::DecodeError> {
         match tag {
-            1 => prost::encoding::string::merge(wire_type, &mut self.domain, buf, ctx)?,
-            2 => prost::encoding::int64::merge(wire_type, &mut self.version, buf, ctx)?,
-            _ => prost::encoding::skip_field(wire_type, tag, buf, ctx)?,
+            1 => {
+                //print domain
+                prost::encoding::string::merge(wire_type, &mut self.domain, buf, ctx)?
+            },
+            2 => {
+                //print version
+                prost::encoding::int64::merge(wire_type, &mut self.version, buf, ctx)?
+            },
+            _ => {
+                println!("skipping unknown tag from opsetimport");
+                prost::encoding::skip_field(wire_type, tag, buf, ctx)?
+            },
         }
         Ok(())
     }
@@ -182,9 +194,15 @@ impl Message for TensorProto {
     ) -> Result<(), prost::DecodeError> {
         match tag {
             1 => {
-                let mut dim = 0i64;
-                prost::encoding::int64::merge(wire_type, &mut dim, buf, ctx)?;
-                self.dims.push(dim);
+                // let mut dim = 0i64;
+                prost::encoding::int64::merge_repeated(wire_type, &mut self.dims, buf, ctx)?;
+                // self.dims.push(dim);
+                //nowcommented  println!("TensorProto: Added dimension: {}", dim);
+            }
+            5 => {
+                // let mut dim = 0i64;
+                prost::encoding::int32::merge_repeated(wire_type, &mut self.int32_data, buf, ctx)?;
+                // self.dims.push(dim);
                 //nowcommented  println!("TensorProto: Added dimension: {}", dim);
             }
             2 => {
@@ -197,12 +215,12 @@ impl Message for TensorProto {
             }
             9 => {
                 prost::encoding::bytes::merge(wire_type, &mut self.raw_data, buf, ctx)?;
-                 println!("TensorProto: Added raw_data (length: {})", self.raw_data.len());//nowcommented 
+                //  println!("TensorProto: Added raw_data (length: {})", self.raw_data.len());//nowcommented 
             }
             6 => {
-                let mut string_data = Vec::new();
-                prost::encoding::bytes::merge(wire_type, &mut string_data, buf, ctx)?;
-                self.string_data.push(string_data.clone());
+                // let mut string_data = Vec::new();
+                prost::encoding::bytes::merge_repeated(wire_type, &mut self.string_data, buf, ctx)?;
+                // self.string_data.push(string_data.clone());
                 //nowcommented  println!("TensorProto: Added string_data: {:?}", String::from_utf8_lossy(&string_data));
             }
             4 => {
@@ -212,9 +230,9 @@ impl Message for TensorProto {
                 //nowcommented  println!("TensorProto: Added float_data: {}", float_data);
             }
            7 => {
-                let mut int64_data = 0i64;
-                prost::encoding::int64::merge(wire_type, &mut int64_data, buf, ctx)?;
-                self.int64_data.push(int64_data);
+                // let mut int64_data = 0i64;
+                prost::encoding::int64::merge_repeated(wire_type, &mut self.int64_data, buf, ctx)?;
+                // self.int64_data.push(int64_data);
                 //nowcommented  println!("TensorProto: Added int64_data: {}", int64_data);
             }
             _ => {
@@ -259,7 +277,7 @@ impl Message for ValueInfoProto {
                 self.type_proto = Some(type_proto);
             }
             _ => {
-                //nowcommented  println!("ValueInfoProto: Skipping unknown tag: {}", tag);
+                  println!("ValueInfoProto: Skipping unknown tag: {}", tag);//nowcommented
                 prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
             }
         }
@@ -309,13 +327,13 @@ impl Message for ModelProto {
                 //nowcommented  println!("ModelProto: Parsed graph");
             }
             8 => {
-                let mut opset = OpSetImport::default();
-                prost::encoding::message::merge(wire_type, &mut opset, buf, ctx)?;
-                self.opset_import.push(opset);
+                // let mut opset = OpSetImport::default();
+                prost::encoding::message::merge_repeated(wire_type, &mut self.opset_import, buf, ctx)?;
+                // self.opset_import.push(opset);
                 //nowcommented  println!("ModelProto: Added opset_import (domain: {}, version: {})", self.opset_import.last().unwrap().domain, self.opset_import.last().unwrap().version);
             }
             _ => {
-                //nowcommented  println!("ModelProto: Skipping unknown tag: {}", tag);
+                  println!("ModelProto: Skipping unknown tag: {}", tag);//nowcommented
                 prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
             }
         }
@@ -345,9 +363,9 @@ impl Message for GraphProto {
     ) -> Result<(), prost::DecodeError> {
         match tag {
             1 => {
-                let node_index = NODE_COUNTER.fetch_add(1, Ordering::SeqCst);
-                let mut node = NodeProto::default();
-                prost::encoding::message::merge(wire_type, &mut node, buf, ctx)?;
+                // let node_index = NODE_COUNTER.fetch_add(1, Ordering::SeqCst);
+                // let mut node = NodeProto::default();
+                prost::encoding::message::merge_repeated(wire_type, &mut self.node, buf, ctx)?;
                 // println!(
                 //     "GraphProto: Parsed Node {} (OpType: {})",
                 //     node_index,
@@ -361,7 +379,7 @@ impl Message for GraphProto {
                 // for output in &node.output {
                 //     println!("    - {}", output);
                 // }
-                self.node.push(node);
+                // self.node.push(node);
             }
             2 => {
                 prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?;
@@ -372,33 +390,33 @@ impl Message for GraphProto {
                 prost::encoding::bytes::merge(wire_type, &mut bytes, buf, ctx)?;
                 // Attempt to convert bytes to UTF-8 string, fallback to empty string if invalid
                 self.doc_string = String::from_utf8_lossy(&bytes).into_owned();
-                println!("GraphProto: Set doc_string: {:?}", bytes);
+                // println!("GraphProto: Set doc_string: {:?}", bytes);
                 // println!("GraphProto: Set doc_string: {}", self.doc_string);
                 //nowcommented  println!("GraphProto: Set doc_string: {}", self.doc_string);
             }
             5 => {
-                let mut init = TensorProto::default();
-                prost::encoding::message::merge(wire_type, &mut init, buf, ctx)?;
-                  println!("GraphProto: Added initializer (name: {})", init.name); //nowcommented
-                self.initializer.push(init);
+                // let mut init = TensorProto::default();
+                prost::encoding::message::merge_repeated(wire_type, &mut self.initializer, buf, ctx)?;
+                //   println!("GraphProto: Added initializer (name: {})", init.name); //nowcommented
+                // self.initializer.push(init);
             }
             12 => {
-                let mut output = ValueInfoProto::default();
-                prost::encoding::message::merge(wire_type, &mut output, buf, ctx)?;
+                // let mut output = ValueInfoProto::default();
+                prost::encoding::message::merge_repeated(wire_type, &mut self.output, buf, ctx)?;
                 //nowcommented  println!("GraphProto: Added output (name: {})", output.name);
-                self.output.push(output);
+                // self.output.push(output);
             }
             11 => {
-                let mut input = ValueInfoProto::default();
-                prost::encoding::message::merge(wire_type, &mut input, buf, ctx)?;
+                // let mut input = ValueInfoProto::default();
+                prost::encoding::message::merge_repeated(wire_type, &mut self.input, buf, ctx)?;
                 //nowcommented  println!("GraphProto: Added input (name: {})", input.name);
-                self.input.push(input);
+                // self.input.push(input);
             }
             13 => {
-                let mut value_info = ValueInfoProto::default();
-                prost::encoding::message::merge(wire_type, &mut value_info, buf, ctx)?;
+                // let mut value_info = ValueInfoProto::default();
+                prost::encoding::message::merge_repeated(wire_type, &mut self.value_info, buf, ctx)?;
                 //nowcommented  println!("GraphProto: Added value_info (name: {})", value_info.name);
-                self.value_info.push(value_info);
+                // self.value_info.push(value_info);
             }
             _ => {
                   println!("GraphProto: Skipping unknown tag: {}", tag);//nowcommented
@@ -414,7 +432,7 @@ impl Message for GraphProto {
 
     fn clear(&mut self) {
         *self = GraphProto::default();
-        NODE_COUNTER.store(0, Ordering::SeqCst);
+        // NODE_COUNTER.store(0, Ordering::SeqCst);
     }
 }
 
@@ -432,15 +450,15 @@ impl Message for NodeProto {
     ) -> Result<(), prost::DecodeError> {
         match tag {
             1 => {
-                let mut input = String::new();
-                prost::encoding::string::merge(wire_type, &mut input, buf, ctx)?;
-                self.input.push(input.clone());
+                // let mut input = String::new();
+                prost::encoding::string::merge_repeated(wire_type, &mut self.input, buf, ctx)?;
+                // self.input.push(input.clone());
                 //nowcommented  println!("NodeProto: Added input: {}", input);
             }
             2 => {
-                let mut output = String::new();
-                prost::encoding::string::merge(wire_type, &mut output, buf, ctx)?;
-                self.output.push(output.clone());
+                // let mut output = String::new();
+                prost::encoding::string::merge_repeated(wire_type, &mut self.output, buf, ctx)?;
+                // self.output.push(output.clone());
                 //nowcommented  println!("NodeProto: Added output: {}", output);
             }
             3 => {
@@ -450,7 +468,7 @@ impl Message for NodeProto {
                 self.name = String::from_utf8_lossy(&bytes).into_owned();
                 // println!("GraphProto: Set doc_string: {:?}", bytes);
                 // prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?;
-                println!("NodeProto: Set name: {}", self.name);
+                // println!("NodeProto: Set name: {}", self.name);
             }
             4 => {
                 prost::encoding::string::merge(wire_type, &mut self.op_type, buf, ctx)?;
@@ -463,13 +481,13 @@ impl Message for NodeProto {
                 self.domain = String::from_utf8_lossy(&bytes).into_owned();
                 // println!("GraphProto: Set doc_string: {:?}", bytes);
                 // prost::encoding::string::merge(wire_type, &mut self.domain, buf, ctx)?;
-                println!("NodeProto: Set domain: {}", self.domain);
+                // println!("NodeProto: Set domain: {}", self.domain);
             }
             7 => {
-                let mut attr = AttributeProto::default();
-                prost::encoding::message::merge(wire_type, &mut attr, buf, ctx)?;
+                // let mut attr = AttributeProto::default();
+                prost::encoding::message::merge_repeated(wire_type, &mut self.attributes, buf, ctx)?;
                 //nowcommented  println!("NodeProto: Added attribute (name: {})", attr.name);
-                self.attributes.push(attr);
+                // self.attributes.push(attr);
             }
              8 => {
                 // Handle subgraph attributes (e.g., then_branch, else_branch, body)
@@ -479,7 +497,7 @@ impl Message for NodeProto {
                 self.subgraphs.insert(format!("subgraph_{}", self.subgraphs.len()), subgraph);
             }
             _ => {
-                //nowcommented  println!("NodeProto: Skipping unknown tag: {}", tag);
+                 println!("NodeProto: Skipping unknown tag: {}", tag); //nowcommented
                 prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
             }
         }
@@ -510,7 +528,7 @@ impl Message for AttributeProto {
         match tag {
             1 => {
                 prost::encoding::string::merge(wire_type, &mut self.name, buf, ctx)?;
-                println!("AttributeProto: Set name: {}", self.name);
+                // println!("AttributeProto: Set name: {}", self.name);
             }
             3 => {
                 prost::encoding::int64::merge(wire_type, &mut self.i, buf, ctx)?;
@@ -549,7 +567,7 @@ impl Message for AttributeProto {
                 self.g = Some(subgraph);
             }
             _ => {
-                //nowcommented  println!("AttributeProto: Skipping unknown tag: {}", tag);
+                  println!("AttributeProto: Skipping unknown tag: {}", tag);//nowcommented
                 prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
             }
         }
@@ -586,7 +604,7 @@ impl Message for TypeProto {
                 self.tensor_type = Some(tensor_type);
             }
             _ => {
-                //nowcommented  println!("TypeProto: Skipping unknown tag: {}", tag);
+                  println!("TypeProto: Skipping unknown tag: {}", tag);//nowcommented
                 prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
             }
         }
@@ -627,7 +645,7 @@ impl Message for TensorTypeProto {
                 self.shape = Some(shape);
             }
             _ => {
-                //nowcommented  println!("TensorTypeProto: Skipping unknown tag: {}", tag);
+                  println!("TensorTypeProto: Skipping unknown tag: {}", tag);//nowcommented
                 prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
             }
         }
@@ -658,13 +676,13 @@ impl Message for TensorShapeProto {
         //nowcommented  println!("Parsing TensorShapeProto (tag: {})", tag);
         match tag {
             1 => {
-                let mut dim = TensorDimension::default();
-                prost::encoding::message::merge(wire_type, &mut dim, buf, ctx)?;
+                // let mut dim = TensorDimension::default();
+                prost::encoding::message::merge_repeated(wire_type, &mut self.dim, buf, ctx)?;
                 //nowcommented  println!("TensorShapeProto: Added dimension (dim_value: {})", dim.dim_value);
-                self.dim.push(dim);
+                // self.dim.push(dim);
             }
             _ => {
-                //nowcommented  println!("TensorShapeProto: Skipping unknown tag: {}", tag);
+                  println!("TensorShapeProto: Skipping unknown tag: {}", tag);//nowcommented
                 prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
             }
         }
@@ -699,7 +717,7 @@ impl Message for TensorDimension {
                 //nowcommented  println!("Dimension: Set dim_value: {}", self.dim_value);
             }
             _ => {
-                //nowcommented  println!("Dimension: Skipping unknown tag: {}", tag);
+                  println!("Dimension: Skipping unknown tag: {}", tag);//nowcommented
                 prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
             }
         }
@@ -1283,13 +1301,13 @@ impl OrtEngine {
         // println!("starting inference2");
         // Load all initializers into tensor_map
         for tensor in &graph.initializer {
-            println!("{:?}",tensor);
+            // println!("{:?}",tensor);
 
             if !tensor.name.is_empty() {
                 match self.parse_tensor(tensor) {
                     Ok(parsed_tensor) => {
                         tensor_map.insert(tensor.name.clone(), parsed_tensor);
-                        println!("{:?}",tensor_map);
+                        // println!("{:?}",tensor_map);
                     }
                     Err(e) => {
                         eprintln!("Warning: Failed to parse initializer {}: {:?}", tensor.name, e);
@@ -1404,6 +1422,19 @@ impl OrtEngine {
                 data: Arc::new(data),
             })
         }
+        DataType::Int32 => {
+            let data = parse_int32_data(proto, total_elements)?;
+            if data.len() != total_elements * 4 {
+                return Err(OrtError::InvalidTensorData(
+                    "Int32 tensor data length mismatch".into(),
+                ));
+            }
+            Ok(OrtValue::Tensor {
+                shape,
+                dtype: DataType::Int32,
+                data: Arc::new(data),
+            })
+        }
         DataType::String => {
             let strings = proto
                 .string_data
@@ -1482,6 +1513,18 @@ fn parse_int64_data(proto: &TensorProto, count: usize) -> OrtResult<Vec<u8>> {
     } else {
         let mut bytes = Vec::with_capacity(count * 8);
         for i in &proto.int64_data {
+            bytes.extend_from_slice(&i.to_le_bytes());
+        }
+        Ok(bytes)
+    }
+
+}
+fn parse_int32_data(proto: &TensorProto, count: usize) -> OrtResult<Vec<u8>> {
+    if !proto.raw_data.is_empty() {
+        Ok(proto.raw_data.clone())
+    } else {
+        let mut bytes = Vec::with_capacity(count * 4);
+        for i in &proto.int32_data {
             bytes.extend_from_slice(&i.to_le_bytes());
         }
         Ok(bytes)
@@ -1576,106 +1619,107 @@ pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
 fn main() -> Result<()> {
     //  OrtEngine::print_model_info("./kokoro-v1.0.onnx")?;
     let engine = OrtEngine::new("./kokoro-v1.0-simplified.onnx")?;
-    let graph=engine.model.graph.unwrap();
-    for i in graph.initializer{
-        println!("{:?}",i);
+    // let graph=engine.model.graph.unwrap();
+    // println!("{}",graph.initializer.len());
+    // for i in graph.initializer{
+    //     println!("{:?}",i.name);
+    // }
+let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
+    let mut voices = HashMap::new();
+
+    for voice in npz.names().unwrap() {
+        let voice_data: Result<Array3<f32>, _> = npz.by_name(&voice);
+        if let Ok(voice_data) = voice_data {
+            voices.insert(voice, voice_data);
+        }
     }
-// let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
-//     let mut voices = HashMap::new();
 
-//     for voice in npz.names().unwrap() {
-//         let voice_data: Result<Array3<f32>, _> = npz.by_name(&voice);
-//         if let Ok(voice_data) = voice_data {
-//             voices.insert(voice, voice_data);
-//         }
-//     }
+    let sorted_voices = {
+        let mut voice_names = voices.keys().cloned().collect::<Vec<_>>();
+        voice_names.sort();
+        voice_names
+    };
 
-//     let sorted_voices = {
-//         let mut voice_names = voices.keys().cloned().collect::<Vec<_>>();
-//         voice_names.sort();
-//         voice_names
-//     };
+    println!("Loaded {} voices: {:?}", voices.len(), sorted_voices);
+    // Example input data
+    let tokens: Vec<Vec<i64>> = vec![vec![0, 50, 156, 43, 102, 4, 0]]; // [1, 7]
+    let speed: f32 = 1.0;
 
-//     println!("Loaded {} voices: {:?}", voices.len(), sorted_voices);
-//     // Example input data
-//     let tokens: Vec<Vec<i64>> = vec![vec![0, 50, 156, 43, 102, 4, 0]]; // [1, 7]
-//     let speed: f32 = 1.0;
+    // Create tokens tensor
+    let batch_size = tokens.len();
+    let sequence_length = tokens[0].len();
+    let tokens_flat: Vec<i64> = tokens.clone().into_iter().flatten().collect();
+    let tokens_tensor = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(sequence_length)],
+        dtype: DataType::Int64,
+        data: Arc::new(
+            tokens_flat
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect::<Vec<u8>>(),
+        ),
+    };
 
-//     // Create tokens tensor
-//     let batch_size = tokens.len();
-//     let sequence_length = tokens[0].len();
-//     let tokens_flat: Vec<i64> = tokens.clone().into_iter().flatten().collect();
-//     let tokens_tensor = OrtValue::Tensor {
-//         shape: vec![Dimensions::Fixed(batch_size), Dimensions::Fixed(sequence_length)],
-//         dtype: DataType::Int64,
-//         data: Arc::new(
-//             tokens_flat
-//                 .iter()
-//                 .flat_map(|x| x.to_le_bytes())
-//                 .collect::<Vec<u8>>(),
-//         ),
-//     };
+    // Create speed tensor
+    let speed_tensor = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(speed.to_le_bytes().to_vec()),
+    };
 
-//     // Create speed tensor
-//     let speed_tensor = OrtValue::Tensor {
-//         shape: vec![Dimensions::Fixed(1)],
-//         dtype: DataType::Float,
-//         data: Arc::new(speed.to_le_bytes().to_vec()),
-//     };
+    // Parse style string and blend styles
+    let style_str = "af_sarah.4+af_nicole.6";
+    let styles: Vec<&str> = style_str.split('+').collect();
 
-//     // Parse style string and blend styles
-//     let style_str = "af_sarah.4+af_nicole.6";
-//     let styles: Vec<&str> = style_str.split('+').collect();
+    let mut style_names = Vec::new();
+    let mut style_portions = Vec::new();
 
-//     let mut style_names = Vec::new();
-//     let mut style_portions = Vec::new();
+    // Parse style names and portions
+    for style in styles {
+        if let Some((name, portion)) = style.split_once('.') {
+            if let Ok(portion) = portion.parse::<f32>() {
+                style_names.push(name);
+                style_portions.push(portion * 0.1); // Scale portion to 0.0-1.0 range
+            }
+        }
+    }
+    println!("Using styles: {:?}, portions: {:?}", style_names, style_portions);
 
-//     // Parse style names and portions
-//     for style in styles {
-//         if let Some((name, portion)) = style.split_once('.') {
-//             if let Ok(portion) = portion.parse::<f32>() {
-//                 style_names.push(name);
-//                 style_portions.push(portion * 0.1); // Scale portion to 0.0-1.0 range
-//             }
-//         }
-//     }
-//     println!("Using styles: {:?}, portions: {:?}", style_names, style_portions);
+    // Initialize blended_style as a 1x256 tensor
+    let mut blended_style = vec![vec![0.0; 256]; 1];
 
-//     // Initialize blended_style as a 1x256 tensor
-//     let mut blended_style = vec![vec![0.0; 256]; 1];
+    // Blend styles from the voices map
+    for (name, portion) in style_names.iter().zip(style_portions.iter()) {
+        if let Some(voice_data) = voices.get(*name) {
+            // Get the style vector for the first token position
+            let style_slice = voice_data.slice(ndarray::s![0, 0, ..]);
+            for j in 0..256 {
+                blended_style[0][j] += style_slice[j] * portion;
+            }
+        } else {
+            println!("Warning: style {} not found in voices", name);
+        }
+    }
 
-//     // Blend styles from the voices map
-//     for (name, portion) in style_names.iter().zip(style_portions.iter()) {
-//         if let Some(voice_data) = voices.get(*name) {
-//             // Get the style vector for the first token position
-//             let style_slice = voice_data.slice(ndarray::s![0, 0, ..]);
-//             for j in 0..256 {
-//                 blended_style[0][j] += style_slice[j] * portion;
-//             }
-//         } else {
-//             println!("Warning: style {} not found in voices", name);
-//         }
-//     }
+    // Convert blended_style to raw bytes for OrtValue::Tensor
+    let flat_data: Vec<f32> = blended_style.into_iter().flatten().collect();
+    let data_bytes: Vec<u8> = flat_data
+        .into_iter()
+        .flat_map(|x| x.to_le_bytes().to_vec())
+        .collect();
 
-//     // Convert blended_style to raw bytes for OrtValue::Tensor
-//     let flat_data: Vec<f32> = blended_style.into_iter().flatten().collect();
-//     let data_bytes: Vec<u8> = flat_data
-//         .into_iter()
-//         .flat_map(|x| x.to_le_bytes().to_vec())
-//         .collect();
+    // Create the style tensor
+    let style_tensor = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(256)], // Shape [1, 256]
+        dtype: DataType::Float,
+        data: Arc::new(data_bytes),
+    };
 
-//     // Create the style tensor
-//     let style_tensor = OrtValue::Tensor {
-//         shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(256)], // Shape [1, 256]
-//         dtype: DataType::Float,
-//         data: Arc::new(data_bytes),
-//     };
-
-//     // Create input HashMap
-//     let mut inputs = HashMap::new();
-//     inputs.insert("tokens".to_string(), tokens_tensor);
-//     inputs.insert("style".to_string(), style_tensor);
-//     inputs.insert("speed".to_string(), speed_tensor);
+    // Create input HashMap
+    let mut inputs = HashMap::new();
+    inputs.insert("tokens".to_string(), tokens_tensor);
+    inputs.insert("style".to_string(), style_tensor);
+    inputs.insert("speed".to_string(), speed_tensor);
 
 
 // ------------------------------------------------------------------------
@@ -1685,56 +1729,7 @@ fn main() -> Result<()> {
 // ------------------------------------------------------------------------
 // ------------------------------------------------------------------------
     
-    // Add the missing embeddings weight tensors
-    // Creating placeholder tensors with appropriate dimensions
-    // Typically these would be loaded from a pre-trained model
-    // let embedding_dim = 768; // Standard embedding dimension
-    // let vocab_size = 30522; // Standard vocabulary size
-    
-    // Create zero-filled tensors for the embeddings
-    // let bert_embeddings_data = vec![0.0f32; vocab_size * embedding_dim];
-    // let bert_embeddings_bytes: Vec<u8> = bert_embeddings_data
-    //     .iter()
-    //     .flat_map(|x| x.to_le_bytes().to_vec())
-    //     .collect();
-        
-    // let bert_embeddings_tensor = OrtValue::Tensor {
-    //     shape: vec![Dimensions::Fixed(vocab_size), Dimensions::Fixed(embedding_dim)],
-    //     dtype: DataType::Float,
-    //     data: Arc::new(bert_embeddings_bytes),
-    // };
-    
-    // Create another embedding tensor for the text encoder
-    // let text_encoder_embeddings_data = vec![0.0f32; vocab_size * embedding_dim];
-    // let text_encoder_embeddings_bytes: Vec<u8> = text_encoder_embeddings_data
-    //     .iter()
-    //     .flat_map(|x| x.to_le_bytes().to_vec())
-    //     .collect();
-        
-    // let text_encoder_embeddings_tensor = OrtValue::Tensor {
-    //     shape: vec![Dimensions::Fixed(vocab_size), Dimensions::Fixed(embedding_dim)],
-    //     dtype: DataType::Float,
-    //     data: Arc::new(text_encoder_embeddings_bytes),
-    // };
-    
-    // inputs.insert("encoder.bert.embeddings.word_embeddings.weight".to_string(), bert_embeddings_tensor);
-    // inputs.insert("encoder.text_encoder.embedding.weight".to_string(), text_encoder_embeddings_tensor);
-    
-    // // Add the constant tensor needed by the encoder
-    // // This is likely a shape or dimension tensor used in the model
-    // let constant_data = vec![1.0f32; 1]; // Simple 1-element tensor with value 1.0
-    // let constant_bytes: Vec<u8> = constant_data
-    //     .iter()
-    //     .flat_map(|x| x.to_le_bytes().to_vec())
-    //     .collect();
-        
-    // let constant_tensor = OrtValue::Tensor {
-    //     shape: vec![Dimensions::Fixed(1)],
-    //     dtype: DataType::Float,
-    //     data: Arc::new(constant_bytes),
-    // };
-    
-    // inputs.insert("shape/encoder/Constant_3_output_0".to_string(), constant_tensor);
+   
 
 
 // ------------------------------------------------------------------------
@@ -1745,13 +1740,13 @@ fn main() -> Result<()> {
 // ------------------------------------------------------------------------
     // Run inference
     // println!("Running inference...");
-    // let outputs = engine.infer(inputs)?;
+    let outputs = engine.infer(inputs)?;
     
     // // Process outputs
-    // println!("Inference complete. Outputs:");
-    // for (name, value) in &outputs {
-    //     println!("  - {}: {:?}", name, value);
-    // }
+    println!("Inference complete. Outputs:");
+    for (name, value) in &outputs {
+        println!("  - {}: {:?}", name, value);
+    }
     
     Ok(())
 }

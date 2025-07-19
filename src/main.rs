@@ -32,6 +32,8 @@ use thiserror::Error;
 use ndarray::{Array, Array2, Array3, Array4, ArrayD, Axis, Dimension, Zip};
 use num_traits::{Float, ToBytes};
 
+// use crate::ndarray_to_ort::SupportedType;
+
 // Simplified ONNX type definitions
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DataType {
@@ -1124,6 +1126,8 @@ impl ShapeInference {
     }
 }
 }
+
+mod convert;
 pub struct OrtEngine {
     model: ModelProto,
     node_registry: HashMap<String, fn(&NodeProto, &[OrtValue]) -> OrtResult<OrtValue>>,
@@ -1131,42 +1135,6 @@ pub struct OrtEngine {
     shape_inference: ShapeInference, // Added
 }
 
-// Helper function to convert OrtValue to ndarray
-fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayD<f32>> {
-    match ort {
-        OrtValue::Tensor { shape, dtype: DataType::Float, data, .. } => {
-            // Check if shape contains symbolic dimensions
-            if shape.iter().any(|d| matches!(d, Dimensions::Symbolic(_))) {
-                return Err(OrtError::InvalidTensorData("Cannot convert symbolic shape to ndarray".into()));
-            }
-            let concrete_shape: Vec<usize> = shape.iter().map(|d| match d {
-                Dimensions::Fixed(n) => *n,
-                Dimensions::Symbolic(_) => unreachable!(), // Handled above
-            }).collect();
-            let float_data: Vec<f32> = data
-                .chunks(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .collect();
-            ArrayD::from_shape_vec(concrete_shape, float_data)
-                .map_err(|_| OrtError::InvalidTensorData("Shape mismatch".into()))
-        }
-        _ => Err(OrtError::TypeMismatch("Expected float tensor")),
-    }
-}
-
-fn ndarray_to_ort(array: ArrayD<f32>, dtype: DataType) -> OrtValue {
-    let shape: Vec<Dimensions> = array.shape().iter().map(|&n| Dimensions::Fixed(n)).collect();
-    let data: Vec<u8> = array
-        .into_raw_vec()
-        .into_iter()
-        .flat_map(|x| x.to_le_bytes())
-        .collect();
-    OrtValue::Tensor {
-        shape,
-        dtype,
-        data: Arc::new(data),
-    }
-}
 
 impl OrtEngine {
     pub fn new<P: AsRef<Path>>(path: P) -> OrtResult<Self> {

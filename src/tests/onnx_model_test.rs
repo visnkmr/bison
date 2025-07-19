@@ -54,6 +54,7 @@ fn create_tensor(shape: Vec<usize>, data: Vec<f32>) -> OrtValue {
     }
 }
 use crate::print_model_info;
+use crate::convert::*;
 #[test]
 fn test_parse_and_infer_from_onnx_file() {
     // Create a temporary ONNX model file
@@ -111,7 +112,7 @@ fn test_parse_and_infer_from_onnx_file() {
                     
                     if let Some(output_tensor) = output_map.get("C") {
                         // Convert to ndarray for easier validation
-                        if let Ok(array) = crate::ort_to_ndarray(output_tensor) {
+                        if let Ok(array) = crate::convert::ort_to_ndarray(output_tensor) {
                             println!("{:?}",array)
                             // assert_eq!(array.shape(), &[2, 2]);
                             

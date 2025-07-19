@@ -1,16 +1,17 @@
 // #![recursion_limit = "5684"]
-
+#![feature(try_trait_v2)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 mod core_ops;
+// mod core_ops2;
 pub use core_ops::*;
 #[cfg(test)]
 mod tests {
-    pub mod tensor_ops_test;
-    pub mod parser_test;
-    pub mod onnx_model_test;
-    pub mod sequence_map_test;
-    pub mod bert_ops_test;
-    pub mod kokoro_ops_test;
+    // pub mod tensor_ops_test;
+    // pub mod parser_test;
+    // pub mod onnx_model_test;
+    // pub mod sequence_map_test;
+    // pub mod bert_ops_test;
+    // pub mod kokoro_ops_test;
 }
 
 // Static counter for node indexing
@@ -795,8 +796,73 @@ impl fmt::Debug for OrtValue {
         }
     }
 }
-
+impl fmt::Display for OrtValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OrtValue::Tensor { shape, dtype, data } => {
+                write!(f, "Tensor {{ shape: {:?}, dtype: {:?}", shape, dtype)?;
+                // Summarize data based on dtype
+                let preview_len = 5; // Show up to 5 elements
+                match dtype {
+                    DataType::Float => {
+                                        let float_data: Vec<f32> = data
+                                            .chunks_exact(4)
+                                            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                                            .collect();
+                                        let preview = float_data.iter().take(preview_len).collect::<Vec<_>>();
+                                        write!(f, ", data: [{} elements, first {:?}]", float_data.len(), preview)?;
+                                    }
+                    DataType::Int64 => {
+                                        let int_data: Vec<i64> = data
+                                            .chunks_exact(8)
+                                            .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+                                            .collect();
+                                        let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
+                                        write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
+                                    }
+                    DataType::Int32 => {
+                                        let int_data: Vec<i32> = data
+                                            .chunks_exact(4)
+                                            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+                                            .collect();
+                                        let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
+                                        write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
+                                    }
+                    DataType::String => todo!(),
+                }
+                write!(f, " }}")
+            }
+            OrtValue::Sequence(seq) => {
+                write!(f, "Sequence(len={}) [", seq.len())?;
+                for (i, item) in seq.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "]")
+            }
+            OrtValue::Map(map) => {
+                write!(f, "Map(len={}) {{", map.len())?;
+                for (i, (key, value)) in map.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:?}: {}", key, value)?;
+                }
+                write!(f, "}}")
+            }
+            OrtValue::Opaque(data) => {
+                let preview = data.iter().take(5).collect::<Vec<_>>();
+                write!(f, "Opaque(len={}) [first {:?}]", data.len(), preview)
+            }
+        }
+    }
+}
 impl OrtValue {
+    // pub fn print(&self){
+    //     println!("{:?}",self.Te)
+    // }
     pub fn shape(&self) -> &Vec<Dimensions> {
         match self {
             OrtValue::Tensor { shape, .. } => shape,
@@ -1156,106 +1222,106 @@ impl OrtEngine {
 
     fn register_core_ops(&mut self) {
         self.node_registry.insert("Add".into(), Self::op_add);
-        self.node_registry.insert("Sub".into(), Self::op_sub);
-        self.node_registry.insert("Mul".into(), Self::op_mul);
-        self.node_registry.insert("Div".into(), Self::op_div);
-        self.node_registry.insert("CumSum".into(), Self::op_cumsum);
-        self.node_registry.insert("Range".into(), Self::op_range);
-        self.node_registry.insert("Shape".into(), Self::op_shape);
-        self.node_registry.insert("MatMul".into(), Self::op_matmul);
-        self.node_registry.insert("Less".into(), Self::op_less);
-        self.node_registry.insert("Squeeze".into(), Self::op_squeeze);
-        self.node_registry.insert("STFT".into(), Self::op_stft);
-        self.node_registry.insert("Slice".into(), Self::op_slice);
-        self.node_registry.insert("Exp".into(), Self::op_exp);
-        self.node_registry.insert("NonZero".into(), Self::op_nonzero);
-        self.node_registry.insert("Tanh".into(), Self::op_tanh);
-        self.node_registry.insert("LeakyRelu".into(), Self::op_leaky_relu);
-        self.node_registry.insert("Greater".into(), Self::op_greater);
-        self.node_registry.insert("Sigmoid".into(), Self::op_sigmoid);
-        self.node_registry.insert("ReduceMean".into(), Self::op_reduce_mean);
-        self.node_registry.insert("Atan".into(), Self::op_atan);
-        self.node_registry.insert("Pow".into(), Self::op_pow);
-        self.node_registry.insert("Gather".into(), Self::op_gather);
-        self.node_registry.insert("Softmax".into(), Self::op_softmax);
-        self.node_registry.insert("Unsqueeze".into(), Self::op_unsqueeze);
-        self.node_registry.insert("Round".into(), Self::op_round);
-        self.node_registry.insert("And".into(), Self::op_and);
-        self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
-        self.node_registry.insert("Pad".into(), Self::op_pad);
-        self.node_registry.insert("Reshape".into(), Self::op_reshape);
-        self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
-        self.node_registry.insert("Where".into(), Self::op_where);
-        self.node_registry.insert("Sin".into(), Self::op_sin);
-        self.node_registry.insert("LSTM".into(), Self::op_lstm);
-        self.node_registry.insert("ReduceSum".into(), Self::op_reduce_sum);
-        self.node_registry.insert("Clip".into(), Self::op_clip);
-        self.node_registry.insert("Resize".into(), Self::op_resize);
-        self.node_registry.insert("Floor".into(), Self::op_floor);
-        self.node_registry.insert("Cos".into(), Self::op_cos);
-        self.node_registry.insert("Concat".into(), Self::op_concat);
-        self.node_registry.insert("Cast".into(), Self::op_cast);
-        self.node_registry.insert("Transpose".into(), Self::op_transpose);
-        self.node_registry.insert("Equal".into(), Self::op_equal);
-        self.node_registry.insert("ConstantOfShape".into(), Self::op_constant_of_shape);
-        self.node_registry.insert("GreaterOrEqual".into(), Self::op_greater_or_equal);
-        self.node_registry.insert("Sqrt".into(), Self::op_sqrt);
-        self.node_registry.insert("Expand".into(), Self::op_expand);
-        self.node_registry.insert("Conv".into(), Self::op_conv);
-        self.node_registry.insert("LayerNormalization".into(), Self::op_layer_normalization);
-        self.node_registry.insert("Gemm".into(), Self::op_gemm);
+        // self.node_registry.insert("Sub".into(), Self::op_sub);
+        // self.node_registry.insert("Mul".into(), Self::op_mul);
+        // self.node_registry.insert("Div".into(), Self::op_div);
+        // self.node_registry.insert("CumSum".into(), Self::op_cumsum);
+        // self.node_registry.insert("Range".into(), Self::op_range);
+        // self.node_registry.insert("Shape".into(), Self::op_shape);
+        // self.node_registry.insert("MatMul".into(), Self::op_matmul);
+        // self.node_registry.insert("Less".into(), Self::op_less);
+        // self.node_registry.insert("Squeeze".into(), Self::op_squeeze);
+        // self.node_registry.insert("STFT".into(), Self::op_stft);
+        // self.node_registry.insert("Slice".into(), Self::op_slice);
+        // self.node_registry.insert("Exp".into(), Self::op_exp);
+        // self.node_registry.insert("NonZero".into(), Self::op_nonzero);
+        // self.node_registry.insert("Tanh".into(), Self::op_tanh);
+        // self.node_registry.insert("LeakyRelu".into(), Self::op_leaky_relu);
+        // self.node_registry.insert("Greater".into(), Self::op_greater);
+        // self.node_registry.insert("Sigmoid".into(), Self::op_sigmoid);
+        // self.node_registry.insert("ReduceMean".into(), Self::op_reduce_mean);
+        // self.node_registry.insert("Atan".into(), Self::op_atan);
+        // self.node_registry.insert("Pow".into(), Self::op_pow);
+        // self.node_registry.insert("Gather".into(), Self::op_gather);
+        // self.node_registry.insert("Softmax".into(), Self::op_softmax);
+        // self.node_registry.insert("Unsqueeze".into(), Self::op_unsqueeze);
+        // self.node_registry.insert("Round".into(), Self::op_round);
+        // self.node_registry.insert("And".into(), Self::op_and);
+        // self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
+        // self.node_registry.insert("Pad".into(), Self::op_pad);
+        // self.node_registry.insert("Reshape".into(), Self::op_reshape);
+        // self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
+        // self.node_registry.insert("Where".into(), Self::op_where);
+        // self.node_registry.insert("Sin".into(), Self::op_sin);
+        // self.node_registry.insert("LSTM".into(), Self::op_lstm);
+        // self.node_registry.insert("ReduceSum".into(), Self::op_reduce_sum);
+        // self.node_registry.insert("Clip".into(), Self::op_clip);
+        // self.node_registry.insert("Resize".into(), Self::op_resize);
+        // self.node_registry.insert("Floor".into(), Self::op_floor);
+        // self.node_registry.insert("Cos".into(), Self::op_cos);
+        // self.node_registry.insert("Concat".into(), Self::op_concat);
+        // self.node_registry.insert("Cast".into(), Self::op_cast);
+        // self.node_registry.insert("Transpose".into(), Self::op_transpose);
+        // self.node_registry.insert("Equal".into(), Self::op_equal);
+        // self.node_registry.insert("ConstantOfShape".into(), Self::op_constant_of_shape);
+        // self.node_registry.insert("GreaterOrEqual".into(), Self::op_greater_or_equal);
+        // self.node_registry.insert("Sqrt".into(), Self::op_sqrt);
+        // self.node_registry.insert("Expand".into(), Self::op_expand);
+        // self.node_registry.insert("Conv".into(), Self::op_conv);
+        // self.node_registry.insert("LayerNormalization".into(), Self::op_layer_normalization);
+        // self.node_registry.insert("Gemm".into(), Self::op_gemm);
         
-        // BERT-specific operators
-        self.node_registry.insert("Erf".into(), Self::op_erf);
-        self.node_registry.insert("Gelu".into(), Self::op_gelu);
-        self.node_registry.insert("Split".into(), Self::op_split);
-        self.node_registry.insert("Dropout".into(), Self::op_dropout);
-        self.node_registry.insert("Einsum".into(), Self::op_einsum);
-        self.node_registry.insert("TopK".into(), Self::op_topk);
-        self.node_registry.insert("GatherElements".into(), Self::op_gather_elements);
-        self.node_registry.insert("GatherND".into(), Self::op_gather_nd);
-        self.node_registry.insert("ReduceMax".into(), Self::op_reduce_max);
-        self.node_registry.insert("Attention".into(), Self::op_attention);
+        // // BERT-specific operators
+        // self.node_registry.insert("Erf".into(), Self::op_erf);
+        // self.node_registry.insert("Gelu".into(), Self::op_gelu);
+        // self.node_registry.insert("Split".into(), Self::op_split);
+        // self.node_registry.insert("Dropout".into(), Self::op_dropout);
+        // self.node_registry.insert("Einsum".into(), Self::op_einsum);
+        // self.node_registry.insert("TopK".into(), Self::op_topk);
+        // self.node_registry.insert("GatherElements".into(), Self::op_gather_elements);
+        // self.node_registry.insert("GatherND".into(), Self::op_gather_nd);
+        // self.node_registry.insert("ReduceMax".into(), Self::op_reduce_max);
+        // self.node_registry.insert("Attention".into(), Self::op_attention);
         
-        // Kokoro-specific operators
-        self.node_registry.insert("Embedding".into(), Self::op_embedding);
-        self.node_registry.insert("ConstantOfShapeInt64".into(), Self::op_constant_of_shape_int64);
-        self.node_registry.insert("LayerNormalizationWithEpsilon".into(), Self::op_layer_normalization_with_epsilon);
-        self.node_registry.insert("Expand".into(), Self::op_expand);
-        self.node_registry.insert("PositionEmbeddings".into(), Self::op_position_embeddings);
-        self.node_registry.insert("TokenTypeEmbeddings".into(), Self::op_token_type_embeddings);
-        self.node_registry.insert("BertAttention".into(), Self::op_bert_attention);
-        self.node_registry.insert("BertIntermediate".into(), Self::op_bert_intermediate);
-        self.node_registry.insert("BertOutput".into(), Self::op_bert_output);
-        self.node_registry.insert("BertPooler".into(), Self::op_bert_pooler);
+        // // Kokoro-specific operators
+        // self.node_registry.insert("Embedding".into(), Self::op_embedding);
+        // self.node_registry.insert("ConstantOfShapeInt64".into(), Self::op_constant_of_shape_int64);
+        // self.node_registry.insert("LayerNormalizationWithEpsilon".into(), Self::op_layer_normalization_with_epsilon);
+        // self.node_registry.insert("Expand".into(), Self::op_expand);
+        // self.node_registry.insert("PositionEmbeddings".into(), Self::op_position_embeddings);
+        // self.node_registry.insert("TokenTypeEmbeddings".into(), Self::op_token_type_embeddings);
+        // self.node_registry.insert("BertAttention".into(), Self::op_bert_attention);
+        // self.node_registry.insert("BertIntermediate".into(), Self::op_bert_intermediate);
+        // self.node_registry.insert("BertOutput".into(), Self::op_bert_output);
+        // self.node_registry.insert("BertPooler".into(), Self::op_bert_pooler);
         
-        // Sequence operators
-        self.node_registry.insert("SequenceAt".into(), Self::op_sequence_at);
-        self.node_registry.insert("SequenceConstruct".into(), Self::op_sequence_construct);
-        self.node_registry.insert("SequenceEmpty".into(), Self::op_sequence_empty);
-        self.node_registry.insert("SequenceErase".into(), Self::op_sequence_erase);
-        self.node_registry.insert("SequenceInsert".into(), Self::op_sequence_insert);
-        self.node_registry.insert("SequenceLength".into(), Self::op_sequence_length);
+        // // Sequence operators
+        // self.node_registry.insert("SequenceAt".into(), Self::op_sequence_at);
+        // self.node_registry.insert("SequenceConstruct".into(), Self::op_sequence_construct);
+        // self.node_registry.insert("SequenceEmpty".into(), Self::op_sequence_empty);
+        // self.node_registry.insert("SequenceErase".into(), Self::op_sequence_erase);
+        // self.node_registry.insert("SequenceInsert".into(), Self::op_sequence_insert);
+        // self.node_registry.insert("SequenceLength".into(), Self::op_sequence_length);
         
-        // Map operators
-        self.node_registry.insert("MapFromTensor".into(), Self::op_map_from_tensor);
-        self.node_registry.insert("MapToTensor".into(), Self::op_map_to_tensor);
-        self.node_registry.insert("MapGet".into(), Self::op_map_get);
-        self.node_registry.insert("MapHasKey".into(), Self::op_map_has_key);
-        self.node_registry.insert("MapKeys".into(), Self::op_map_keys);
+        // // Map operators
+        // self.node_registry.insert("MapFromTensor".into(), Self::op_map_from_tensor);
+        // self.node_registry.insert("MapToTensor".into(), Self::op_map_to_tensor);
+        // self.node_registry.insert("MapGet".into(), Self::op_map_get);
+        // self.node_registry.insert("MapHasKey".into(), Self::op_map_has_key);
+        // self.node_registry.insert("MapKeys".into(), Self::op_map_keys);
         
-        // Control flow operators (improved)
+        // // Control flow operators (improved)
         
         
-        // Other operators
-        self.node_registry.insert("CumSum".into(), Self::op_cumsum);
-        self.node_registry.insert("NonZero".into(), Self::op_nonzero);
-        self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
-        self.node_registry.insert("Conv".into(), Self::op_conv);
-        self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
-        self.node_registry.insert("LSTM".into(), Self::op_lstm);
-        self.node_registry.insert("STFT".into(), Self::op_stft);
-        self.node_registry.insert("Resize".into(), Self::op_resize);
+        // // Other operators
+        // self.node_registry.insert("CumSum".into(), Self::op_cumsum);
+        // self.node_registry.insert("NonZero".into(), Self::op_nonzero);
+        // self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
+        // self.node_registry.insert("Conv".into(), Self::op_conv);
+        // self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
+        // self.node_registry.insert("LSTM".into(), Self::op_lstm);
+        // self.node_registry.insert("STFT".into(), Self::op_stft);
+        // self.node_registry.insert("Resize".into(), Self::op_resize);
     }
     pub fn infer(&self, inputs: HashMap<String, OrtValue>) -> OrtResult<HashMap<String, OrtValue>> {
         // println!("starting inference1");
@@ -1314,12 +1380,12 @@ impl OrtEngine {
     
             let output = if let Some(op) = self.node_registry.get(&node.op_type) {
                 op(node, &node_inputs)?
-            } else if node.op_type == "If" {
-                self.op_if(node, &node_inputs)?
-            } else if node.op_type == "Loop" {
-                self.op_loop(node, &node_inputs)?
-            } else if node.op_type == "Scan" {
-                self.op_scan(node, &node_inputs)?
+            // } else if node.op_type == "If" {
+            //     self.op_if(node, &node_inputs)?
+            // } else if node.op_type == "Loop" {
+            //     self.op_loop(node, &node_inputs)?
+            // } else if node.op_type == "Scan" {
+            //     self.op_scan(node, &node_inputs)?
             } else {
                 return Err(OrtError::UnsupportedOp(node.op_type.clone()));
             };
@@ -1586,7 +1652,8 @@ pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
 
 fn main() -> Result<()> {
     //  OrtEngine::print_model_info("./kokoro-v1.0.onnx")?;
-    let engine = OrtEngine::new("./kokoro-v1.0-simplified.onnx")?;
+    let engine = OrtEngine::new("./corrected_add_model_i16.onnx")?;
+    // let engine = OrtEngine::new("./kokoro-v1.0-simplified.onnx")?;
     // let graph=engine.model.graph.unwrap();
     // println!("{}",graph.initializer.len());
     // for i in graph.initializer{
@@ -1685,9 +1752,9 @@ let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
 
     // Create input HashMap
     let mut inputs = HashMap::new();
-    inputs.insert("tokens".to_string(), tokens_tensor);
-    inputs.insert("style".to_string(), style_tensor);
-    inputs.insert("speed".to_string(), speed_tensor);
+    // inputs.insert("tokens".to_string(), tokens_tensor);
+    // inputs.insert("style".to_string(), style_tensor);
+    // inputs.insert("speed".to_string(), speed_tensor);
 
 
 // ------------------------------------------------------------------------
@@ -1712,9 +1779,20 @@ let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
     
     // // Process outputs
     println!("Inference complete. Outputs:");
-    for (name, value) in &outputs {
-        println!("  - {}: {:?}", name, value);
-    }
+    match outputs.get("C") {
+                Some(a) => {
+                    println!("{}",a);
+                    // let a=a;
+                    // for (key, value) in  {
+                    //     println!("Key: {:?}, Value: {:?}", key, value);
+                    // }
+                }
+                Some(_) => println!("Error: 'predictions' output is not a Map"),
+                None => println!("Error: 'predictions' output not found"),
+            }
+    // for (name, value) in &outputs {
+    //     println!("  - {}: {:?}", name, value);
+    // }
     
     Ok(())
 }

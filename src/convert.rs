@@ -25,6 +25,7 @@ pub enum ArrayDResult {
     Float(ArrayD<f32>),
     Int64(ArrayD<i64>),
     Int32(ArrayD<i32>),
+    Boolean(ArrayD<bool>),
 }
 
 pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, OrtError> {
@@ -33,6 +34,7 @@ pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, Ort
             ArrayDResult::Float(arr) => arr.len() == 1,
             ArrayDResult::Int64(arr) => arr.len() == 1,
             ArrayDResult::Int32(arr) => arr.len() == 1,
+            _=>false
         }
     }
 
@@ -154,11 +156,13 @@ pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, Ort
                 ArrayDResult::Float(_) => "Float",
                 ArrayDResult::Int64(_) => "Int64",
                 ArrayDResult::Int32(_) => "Int32",
+                _=>"ERROR"
             };
             let b_type = match b {
                 ArrayDResult::Float(_) => "Float",
                 ArrayDResult::Int64(_) => "Int64",
                 ArrayDResult::Int32(_) => "Int32",
+                _=>"ERROR"
             };
             let retstr=format!("{}{}",a_type.to_string(),
                 b_type.to_string());
@@ -352,11 +356,15 @@ macro_rules! impl_op {
                             ArrayDResult::Float(_) => "Float",
                             ArrayDResult::Int64(_) => "Int64",
                             ArrayDResult::Int32(_) => "Int32",
+                             _=>"ERROR"
+
                         };
                         let b_type = match b {
                             ArrayDResult::Float(_) => "Float",
                             ArrayDResult::Int64(_) => "Int64",
                             ArrayDResult::Int32(_) => "Int32",
+                            _=>"ERROR"
+
                         };
                         Err(ArrayDResultError::MismatchedVariants(
                             a_type.to_string(),
@@ -412,11 +420,15 @@ impl Div for ArrayDResult {
                     ArrayDResult::Float(_) => "Float",
                     ArrayDResult::Int64(_) => "Int64",
                     ArrayDResult::Int32(_) => "Int32",
+                    _=>"ERROR"
+
                 };
                 let b_type = match b {
                     ArrayDResult::Float(_) => "Float",
                     ArrayDResult::Int64(_) => "Int64",
                     ArrayDResult::Int32(_) => "Int32",
+                    _=>"ERROR"
+
                 };
                 Err(ArrayDResultError::MismatchedVariants(
                     a_type.to_string(),
@@ -584,24 +596,31 @@ impl Div for ArrayDResult {
 pub fn ndarray_to_ort(array: ArrayDResult, dtype: DataType) -> OrtValue {
     let (shape,data)=match(array){
         ArrayDResult::Float(array_base) => {
-            (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),array_base.into_raw_vec()
-            .into_iter()
-            .flat_map(|x| x.to_le_bytes())
-            .collect())
-        },
+                        (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),array_base.into_raw_vec()
+                        .into_iter()
+                        .flat_map(|x| x.to_le_bytes())
+                        .collect())
+            },
         ArrayDResult::Int64(array_base) => {
-            (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),array_base.into_raw_vec()
-            .into_iter()
-            .flat_map(|x| x.to_le_bytes())
-            .collect())
-        },
+                (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),array_base.into_raw_vec()
+                .into_iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect())
+            },
         ArrayDResult::Int32(array_base) => {
-           ( array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),array_base.into_raw_vec()
-           .into_iter()
-           .flat_map(|x| x.to_le_bytes())
-           .collect())
+               ( array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),array_base.into_raw_vec()
+               .into_iter()
+               .flat_map(|x| x.to_le_bytes())
+               .collect())
+            },
+        ArrayDResult::Boolean(array_base) => {
+            (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(), array_base.into_raw_vec()
+                            .into_iter()
+                            .map(|x| if x { 1u8 } else { 0u8 })
+                            .collect())
+            
         },
-    };
+                    };
     OrtValue::Tensor {
         shape,
         dtype,
@@ -669,6 +688,16 @@ pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
                         .map(|arr| ArrayDResult::Int32(arr))
                         .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for int32 tensor".into()))
                 }
+                DataType::Boolean=>{
+                let bool_data: Vec<bool> = data
+                                        .iter()
+                                        .map(|&b| b != 0)
+                                        .collect();
+                    ArrayD::from_shape_vec(IxDyn(&concrete_shape), bool_data)
+                        .map(|arr| ArrayDResult::Boolean(arr))
+                        .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for boolean tensor".into()))
+                    
+                }
                 _ => Err(OrtError::TypeMismatch("Unsupported tensor type, expected Float, Int64, or Int32")),
             }
         }
@@ -680,6 +709,10 @@ pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
 
 #[cfg(test)]
 mod tests {
+
+    use std::collections::HashMap;
+
+    use crate::{AttributeProto, OrtEngine};
 
     use super::*; // Import the parent module's items (pow_array, ArrayDResult, OrtError)
     use ndarray::{ArrayD, IxDyn};
@@ -857,4 +890,419 @@ mod tests {
         }
     }
     
+
+    // Helper function to create an OrtValue boolean tensor from a Vec<bool>
+    fn create_bool_tensor(data: Vec<bool>, shape: Vec<usize>) -> OrtValue {
+        let bytes: Vec<u8> = data.into_iter().map(|b| b as u8).collect();
+        OrtValue::Tensor {
+            shape: shape.into_iter().map(Dimensions::Fixed).collect(),
+            dtype: DataType::Boolean,
+            data: Arc::new(bytes),
+        }
+    }
+
+    #[test]
+    fn test_op_and_valid_inputs() {
+        // Test case 1: Two boolean tensors with same shape
+        let input1 = create_bool_tensor(vec![true, false, true, true], vec![2, 2]);
+        let input2 = create_bool_tensor(vec![true, true, false, true], vec![2, 2]);
+        let inputs = vec![input1, input2];
+
+        let result = OrtEngine::op_and(&NodeProto::default(), &inputs);
+        let result2 = OrtEngine::op_and(&NodeProto::default(), &inputs);
+        println!("{:?}",result);
+        assert!(result.is_ok(), "Expected successful operation, got {:?}", result);
+
+        // Verify the result (assuming ndarray_to_ort preserves the boolean array)
+        let ora=ort_to_ndarray(&result2.unwrap()).unwrap();
+        println!("{:?}",ora);
+
+        if let Ok(OrtValue::Tensor { data, dtype, shape, .. }) = result {
+            assert_eq!(dtype, DataType::Boolean);
+            assert_eq!(shape, vec![Dimensions::Fixed(2), Dimensions::Fixed(2)]);
+            let expected_data: Vec<u8> = vec![true, false, false, true].into_iter().map(|b| b as u8).collect();
+            println!("{:?}",expected_data);
+            assert_eq!(*data, expected_data);
+        }
+    }
+
+    #[test]
+    fn test_op_and_invalid_input_count() {
+        // Test case 2: Too few inputs (0)
+        let inputs: Vec<OrtValue> = vec![];
+        let result = OrtEngine::op_and(&NodeProto::default(), &inputs);
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(ref msg)) if msg == &"And requires exactly two boolean tensors"
+        ));
+
+        // Test case 3: Too many inputs (3)
+        let input1 = create_bool_tensor(vec![true], vec![1]);
+        let input2 = create_bool_tensor(vec![true], vec![1]);
+        let input3 = create_bool_tensor(vec![true], vec![1]);
+        let inputs = vec![input1, input2, input3];
+        let result = OrtEngine::op_and(&NodeProto::default(), &inputs);
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(ref msg)) if msg == &"And requires exactly two boolean tensors"
+        ));
+    }
+
+    #[test]
+    fn test_op_and_type_mismatch() {
+        // Test case 4: First input is not boolean
+        let input1 = OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(1)],
+            dtype: DataType::Float,
+            data: Arc::new(vec![0u8; 4]), // Dummy float data
+        };
+        let input2 = create_bool_tensor(vec![true], vec![1]);
+        let inputs = vec![input1, input2];
+        let result = OrtEngine::op_and(&NodeProto::default(), &inputs);
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(ref msg)) if msg == &"First input must be a boolean tensor"
+        ));
+
+        // Test case 5: Second input is not boolean
+        let input1 = create_bool_tensor(vec![true], vec![1]);
+        let input2 = OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(1)],
+            dtype: DataType::Int32,
+            data: Arc::new(vec![0u8; 4]), // Dummy int32 data
+        };
+        let inputs = vec![input1, input2];
+        let result = OrtEngine::op_and(&NodeProto::default(), &inputs);
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(ref msg)) if msg == &"Second input must be a boolean tensor"
+        ));
+    }
+
+    #[test]
+    fn test_op_and_empty_tensors() {
+        // Test case 6: Empty boolean tensors
+        let input1 = create_bool_tensor(vec![], vec![0]);
+        let input2 = create_bool_tensor(vec![], vec![0]);
+        let inputs = vec![input1, input2];
+        let result = OrtEngine::op_and(&NodeProto::default(), &inputs);
+        assert!(result.is_ok(), "Expected successful operation for empty tensors, got {:?}", result);
+
+        if let Ok(OrtValue::Tensor { data, dtype, shape, .. }) = result {
+            assert_eq!(dtype, DataType::Boolean);
+            assert_eq!(shape, vec![Dimensions::Fixed(0)]);
+            assert!(data.is_empty());
+        }
+    }
+
+    // Note: Broadcasting tests are commented out since the broadcasting code is commented in the function
+    // #[test]
+    // fn test_op_and_broadcasting() {
+    //     // Test case 7: Broadcasting with compatible shapes
+    //     let input1 = create_bool_tensor(vec![true, false], vec![2, 1]);
+    //     let input2 = create_bool_tensor(vec![true], vec![1]);
+    //     let inputs = vec![input1, input2];
+    //     let result = op_and(&NodeProto {}, &inputs);
+    //     assert!(result.is_ok(), "Expected successful broadcasting, got {:?}", result);
+    //
+    //     if let Ok(OrtValue::Tensor { data, dtype, shape, .. }) = result {
+    //         assert_eq!(dtype, DataType::Boolean);
+    //         assert_eq!(shape, vec![Dimensions::Fixed(2), Dimensions::Fixed(1)]);
+    //         let expected_data: Vec<u8> = vec![true, false].into_iter().map(|b| b as u8).collect();
+    //         assert_eq!(*data, expected_data);
+    //     }
+    // }
+
+
+    #[test]
+    fn test_cast_float_to_int64() {
+        // Setup: NodeProto with to=7 (Int64), input tensor with Float data
+        let node = NodeProto {
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Cast".to_string(),
+            attributes: vec![AttributeProto {
+                name: "to".to_string(),
+                i: 7, // Cast to Int64
+                ..Default::default()
+            }],
+            name: "cast_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let float_data = vec![1.5f32, 2.7f32, -3.2f32];
+        let data: Vec<u8> = float_data
+            .into_iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let input = OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(3)],
+            dtype: DataType::Float,
+            data: Arc::new(data),
+        };
+
+        // Execute
+        let result = OrtEngine::op_cast(&node, &[input]).unwrap();
+
+        // Verify
+        match result {
+            OrtValue::Tensor { shape, dtype, data } => {
+                assert_eq!(shape, vec![Dimensions::Fixed(3)]);
+                assert_eq!(dtype, DataType::Int64);
+                let int_data: Vec<i64> = data
+                    .chunks(8)
+                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    .collect();
+                assert_eq!(int_data, vec![1, 2, -3]); // 1.5 -> 1, 2.7 -> 2, -3.2 -> -3
+            }
+            _ => panic!("Expected Tensor output"),
+        }
+    }
+
+    #[test]
+    fn test_cast_int64_to_float() {
+        // Setup: NodeProto with to=1 (Float), input tensor with Int64 data
+        let node = NodeProto {
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Cast".to_string(),
+            attributes: vec![AttributeProto {
+                name: "to".to_string(),
+                i: 1, // Cast to Float
+                ..Default::default()
+            }],
+            name: "cast_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let int_data = vec![1i64, -2i64, 3i64];
+        let data: Vec<u8> = int_data
+            .into_iter()
+            .flat_map(|i| i.to_le_bytes())
+            .collect();
+        let input = OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(3)],
+            dtype: DataType::Int64,
+            data: Arc::new(data),
+        };
+
+        // Execute
+        let result = OrtEngine::op_cast(&node, &[input]).unwrap();
+
+        // Verify
+        match result {
+            OrtValue::Tensor { shape, dtype, data } => {
+                assert_eq!(shape, vec![Dimensions::Fixed(3)]);
+                assert_eq!(dtype, DataType::Float);
+                let float_data: Vec<f32> = data
+                    .chunks(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect();
+                assert_eq!(float_data, vec![1.0, -2.0, 3.0]);
+            }
+            _ => panic!("Expected Tensor output"),
+        }
+    }
+
+    #[test]
+    fn test_cast_float_to_boolean() {
+        // Setup: NodeProto with to=9 (Boolean), input tensor with Float data
+        let node = NodeProto {
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Cast".to_string(),
+            attributes: vec![AttributeProto {
+                name: "to".to_string(),
+                i: 9, // Cast to Boolean
+                ..Default::default()
+            }],
+            name: "cast_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let float_data = vec![0.0f32, 1.5f32, -2.0f32];
+        let data: Vec<u8> = float_data
+            .into_iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let input = OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(3)],
+            dtype: DataType::Float,
+            data: Arc::new(data),
+        };
+
+        // Execute
+        let result = OrtEngine::op_cast(&node, &[input]).unwrap();
+
+        // Verify
+        match result {
+            OrtValue::Tensor { shape, dtype, data } => {
+                assert_eq!(shape, vec![Dimensions::Fixed(3)]);
+                assert_eq!(dtype, DataType::Boolean);
+                let bool_data: Vec<bool> = data.iter().map(|&b| b != 0).collect();
+                assert_eq!(bool_data, vec![false, true, true]); // 0.0 -> false, non-zero -> true
+            }
+            _ => panic!("Expected Tensor output"),
+        }
+    }
+
+    #[test]
+    fn test_cast_boolean_to_float() {
+        // Setup: NodeProto with to=1 (Float), input tensor with Boolean data
+        let node = NodeProto {
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Cast".to_string(),
+            attributes: vec![AttributeProto {
+                name: "to".to_string(),
+                i: 1, // Cast to Float
+                ..Default::default()
+            }],
+            name: "cast_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let bool_data = vec![0u8, 1u8, 0u8]; // false, true, false
+        let input = OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(3)],
+            dtype: DataType::Boolean,
+            data: Arc::new(bool_data),
+        };
+
+        // Execute
+        let result = OrtEngine::op_cast(&node, &[input]).unwrap();
+
+        // Verify
+        match result {
+            OrtValue::Tensor { shape, dtype, data } => {
+                assert_eq!(shape, vec![Dimensions::Fixed(3)]);
+                assert_eq!(dtype, DataType::Float);
+                let float_data: Vec<f32> = data
+                    .chunks(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect();
+                assert_eq!(float_data, vec![0.0, 1.0, 0.0]);
+            }
+            _ => panic!("Expected Tensor output"),
+        }
+    }
+
+    #[test]
+    fn test_missing_to_attribute() {
+        // Setup: NodeProto without 'to' attribute
+        let node = NodeProto {
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Cast".to_string(),
+            attributes: vec![], // No 'to' attribute
+            name: "cast_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let input = OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(1)],
+            dtype: DataType::Float,
+            data: Arc::new(vec![0.0f32.to_le_bytes().to_vec()].concat()),
+        };
+
+        // Execute
+        let result = OrtEngine::op_cast(&node, &[input]);
+
+        // Verify
+        assert!(matches!(
+            result,
+            Err(OrtError::InvalidTensorData(msg)) if msg == "Cast requires 'to' attribute"
+        ));
+    }
+
+    #[test]
+    fn test_unsupported_target_type() {
+        // Setup: NodeProto with unsupported 'to' value (e.g., 999)
+        let node = NodeProto {
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Cast".to_string(),
+            attributes: vec![AttributeProto {
+                name: "to".to_string(),
+                i: 999, // Unsupported type
+                ..Default::default()
+            }],
+            name: "cast_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let input = OrtValue::Tensor {
+            shape: vec![Dimensions::Fixed(1)],
+            dtype: DataType::Float,
+            data: Arc::new(vec![0.0f32.to_le_bytes().to_vec()].concat()),
+        };
+
+        // Execute
+        let result = OrtEngine::op_cast(&node, &[input]);
+
+        // Verify
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(msg)) if msg == "Unsupported cast to type"
+        ));
+    }
+
+    #[test]
+    fn test_non_tensor_input() {
+        // Setup: NodeProto with valid 'to' but non-tensor input
+        let node = NodeProto {
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Cast".to_string(),
+            attributes: vec![AttributeProto {
+                name: "to".to_string(),
+                i: 1, // Cast to Float
+                ..Default::default()
+            }],
+            name: "cast_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let input = OrtValue::Sequence(vec![]); // Non-tensor input
+
+        // Execute
+        let result = OrtEngine::op_cast(&node, &[input]);
+
+        // Verify
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(msg)) if msg == "Input must be a tensor"
+        ));
+    }
+
+    #[test]
+    fn test_empty_input() {
+        // Setup: NodeProto with valid 'to' but no inputs
+        let node = NodeProto {
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Cast".to_string(),
+            attributes: vec![AttributeProto {
+                name: "to".to_string(),
+                i: 1, // Cast to Float
+                ..Default::default()
+            }],
+            name: "cast_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+
+        // Execute
+        let result = OrtEngine::op_cast(&node, &[]);
+
+        // Verify
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(msg)) if msg == "Cast requires one tensor"
+        ));
+    }
+    
+    
+
+
 }

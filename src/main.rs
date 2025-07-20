@@ -42,6 +42,7 @@ pub enum DataType {
     Int64,
     Int32,
     String,
+    Boolean
 }
 
 impl DataType {
@@ -51,6 +52,7 @@ impl DataType {
             6 => Ok(DataType::Int32),
             7 => Ok(DataType::Int64),
             8 => Ok(DataType::String),
+            9 => Ok(DataType::Boolean),
             other => Err(OrtError::UnknownDataType(other)),
         }
     }
@@ -800,37 +802,46 @@ impl fmt::Display for OrtValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OrtValue::Tensor { shape, dtype, data } => {
-                write!(f, "Tensor {{ shape: {:?}, dtype: {:?}", shape, dtype)
+                write!(f, "Tensor {{ shape: {:?}, dtype: {:?}", shape, dtype).unwrap();
                 // Summarize data based on dtype
-                // let preview_len = 5; // Show up to 5 elements
-                // match dtype {
-                //     DataType::Float => {
-                //                         let float_data: Vec<f32> = data
-                //                             .chunks_exact(4)
-                //                             .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-                //                             .collect();
-                //                         let preview = float_data.iter().take(preview_len).collect::<Vec<_>>();
-                //                         write!(f, ", data: [{} elements, first {:?}]", float_data.len(), preview)?;
-                //                     }
-                //     DataType::Int64 => {
-                //                         let int_data: Vec<i64> = data
-                //                             .chunks_exact(8)
-                //                             .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
-                //                             .collect();
-                //                         let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
-                //                         write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
-                //                     }
-                //     DataType::Int32 => {
-                //                         let int_data: Vec<i32> = data
-                //                             .chunks_exact(4)
-                //                             .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
-                //                             .collect();
-                //                         let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
-                //                         write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
-                //                     }
-                //     DataType::String => todo!(),
-                // }
-                // write!(f, " }}")
+                let preview_len = 5; // Show up to 5 elements
+                match dtype {
+                    DataType::Float => {
+                                        let float_data: Vec<f32> = data
+                                            .chunks_exact(4)
+                                            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                                            .collect();
+                                        let preview = float_data.iter().take(preview_len).collect::<Vec<_>>();
+                                        write!(f, ", data: [{} elements, first {:?}]", float_data.len(), preview)?;
+                                    }
+                    DataType::Int64 => {
+                                        let int_data: Vec<i64> = data
+                                            .chunks_exact(8)
+                                            .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+                                            .collect();
+                                        let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
+                                        write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
+                                    }
+                    DataType::Int32 => {
+                                        let int_data: Vec<i32> = data
+                                            .chunks_exact(4)
+                                            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+                                            .collect();
+                                        let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
+                                        write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
+                                    }
+                    DataType::String => todo!(),
+                    DataType::Boolean => {
+                                    let bool_data: Vec<bool> = data
+                                        .iter()
+                                        .map(|&byte| byte != 0)
+                                        .collect();
+                                    let preview = bool_data.iter().take(preview_len).collect::<Vec<_>>();
+                                    write!(f, ", data: [{} elements, first {:?}]", bool_data.len(), preview)?;
+                        
+                    },
+                }
+                write!(f, " }}")
             }
             OrtValue::Sequence(seq) => {
                 write!(f, "Sequence(len={}) [", seq.len())?;
@@ -865,6 +876,12 @@ impl OrtValue {
     // pub fn print(&self){
     //     println!("{:?}",self.Te)
     // }
+    pub fn dtype(&self)->&DataType{
+        match self {
+            OrtValue::Tensor { dtype, .. } => dtype,
+            _ => panic!("Shape only available for Tensor variant"),
+        }
+    }
     pub fn shape(&self) -> &Vec<Dimensions> {
         match self {
             OrtValue::Tensor { shape, .. } => shape,
@@ -1235,34 +1252,34 @@ impl OrtEngine {
         // self.node_registry.insert("Squeeze".into(), Self::op_squeeze);
         // self.node_registry.insert("STFT".into(), Self::op_stft);
         // self.node_registry.insert("Slice".into(), Self::op_slice);
-        // self.node_registry.insert("Exp".into(), Self::op_exp);
+        self.node_registry.insert("Exp".into(), Self::op_exp);
         // self.node_registry.insert("NonZero".into(), Self::op_nonzero);
-        // self.node_registry.insert("Tanh".into(), Self::op_tanh);
+        self.node_registry.insert("Tanh".into(), Self::op_tanh);
         // self.node_registry.insert("LeakyRelu".into(), Self::op_leaky_relu);
         // self.node_registry.insert("Greater".into(), Self::op_greater);
-        // self.node_registry.insert("Sigmoid".into(), Self::op_sigmoid);
+        self.node_registry.insert("Sigmoid".into(), Self::op_sigmoid);
         // self.node_registry.insert("ReduceMean".into(), Self::op_reduce_mean);
-        // self.node_registry.insert("Atan".into(), Self::op_atan);
+        self.node_registry.insert("Atan".into(), Self::op_atan);
         self.node_registry.insert("Pow".into(), Self::op_pow);
         // self.node_registry.insert("Gather".into(), Self::op_gather);
         // self.node_registry.insert("Softmax".into(), Self::op_softmax);
         // self.node_registry.insert("Unsqueeze".into(), Self::op_unsqueeze);
         // self.node_registry.insert("Round".into(), Self::op_round);
-        // self.node_registry.insert("And".into(), Self::op_and);
+        self.node_registry.insert("And".into(), Self::op_and);
         // self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
         // self.node_registry.insert("Pad".into(), Self::op_pad);
         // self.node_registry.insert("Reshape".into(), Self::op_reshape);
         // self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
         // self.node_registry.insert("Where".into(), Self::op_where);
-        // self.node_registry.insert("Sin".into(), Self::op_sin);
+        self.node_registry.insert("Sin".into(), Self::op_sin);
         // self.node_registry.insert("LSTM".into(), Self::op_lstm);
         // self.node_registry.insert("ReduceSum".into(), Self::op_reduce_sum);
         // self.node_registry.insert("Clip".into(), Self::op_clip);
         // self.node_registry.insert("Resize".into(), Self::op_resize);
         // self.node_registry.insert("Floor".into(), Self::op_floor);
-        // self.node_registry.insert("Cos".into(), Self::op_cos);
+        self.node_registry.insert("Cos".into(), Self::op_cos);
         // self.node_registry.insert("Concat".into(), Self::op_concat);
-        // self.node_registry.insert("Cast".into(), Self::op_cast);
+        self.node_registry.insert("Cast".into(), Self::op_cast);
         // self.node_registry.insert("Transpose".into(), Self::op_transpose);
         // self.node_registry.insert("Equal".into(), Self::op_equal);
         // self.node_registry.insert("ConstantOfShape".into(), Self::op_constant_of_shape);
@@ -1433,61 +1450,93 @@ impl OrtEngine {
 
     match DataType::try_from(proto.data_type)? {
         DataType::Float => {
-            let data = parse_float_data(proto, total_elements)?;
-            if data.len() != total_elements * 4 {
-                return Err(OrtError::InvalidTensorData(
-                    "Float tensor data length mismatch".into(),
-                ));
+                        let data = parse_float_data(proto, total_elements)?;
+                        if data.len() != total_elements * 4 {
+                            return Err(OrtError::InvalidTensorData(
+                                "Float tensor data length mismatch".into(),
+                            ));
+                        }
+                        Ok(OrtValue::Tensor {
+                            shape,
+                            dtype: DataType::Float,
+                            data: Arc::new(data),
+                        })
             }
-            Ok(OrtValue::Tensor {
-                shape,
-                dtype: DataType::Float,
-                data: Arc::new(data),
-            })
-        }
         DataType::Int64 => {
-            let data = parse_int64_data(proto, total_elements)?;
-            if data.len() != total_elements * 8 {
-                return Err(OrtError::InvalidTensorData(
-                    "Int64 tensor data length mismatch".into(),
-                ));
+                let data = parse_int64_data(proto, total_elements)?;
+                if data.len() != total_elements * 8 {
+                    return Err(OrtError::InvalidTensorData(
+                        "Int64 tensor data length mismatch".into(),
+                    ));
+                }
+                Ok(OrtValue::Tensor {
+                    shape,
+                    dtype: DataType::Int64,
+                    data: Arc::new(data),
+                })
             }
-            Ok(OrtValue::Tensor {
-                shape,
-                dtype: DataType::Int64,
-                data: Arc::new(data),
-            })
-        }
         DataType::Int32 => {
-            let data = parse_int32_data(proto, total_elements)?;
-            if data.len() != total_elements * 4 {
-                return Err(OrtError::InvalidTensorData(
-                    "Int32 tensor data length mismatch".into(),
-                ));
+                let data = parse_int32_data(proto, total_elements)?;
+                if data.len() != total_elements * 4 {
+                    return Err(OrtError::InvalidTensorData(
+                        "Int32 tensor data length mismatch".into(),
+                    ));
+                }
+                Ok(OrtValue::Tensor {
+                    shape,
+                    dtype: DataType::Int32,
+                    data: Arc::new(data),
+                })
             }
+        DataType::String => {
+                let strings = proto
+                    .string_data
+                    .iter()
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                    .collect::<Vec<_>>();
+                if strings.len() != total_elements {
+                    return Err(OrtError::InvalidTensorData(
+                        "String tensor data length mismatch".into(),
+                    ));
+                }
+                Ok(OrtValue::Tensor {
+                    shape,
+                    dtype: DataType::String,
+                    data: Arc::new(strings.join("").into_bytes()),
+                })
+            }
+        DataType::Boolean => {
+            let data = if !proto.raw_data.is_empty() {
+                if proto.raw_data.len() != total_elements {
+                    return Err(OrtError::InvalidTensorData(
+                        format!("Boolean raw_data length mismatch: expected {}, got {}", total_elements, proto.raw_data.len()),
+                    ));
+                }
+                proto.raw_data.clone()
+            } else {
+                if proto.int32_data.len() != total_elements {
+                    return Err(OrtError::InvalidTensorData(
+                        format!("Boolean int32_data length mismatch: expected {}, got {}", total_elements, proto.int32_data.len()),
+                    ));
+                }
+                let mut bytes = Vec::with_capacity(total_elements);
+                for &b in &proto.int32_data {
+                    if b != 0 && b != 1 {
+                        return Err(OrtError::InvalidTensorData(
+                            "Boolean int32_data contains invalid values".into(),
+                        ));
+                    }
+                    bytes.push(if b == 0 { 0 } else { 1 });
+                }
+                bytes
+            };
             Ok(OrtValue::Tensor {
                 shape,
-                dtype: DataType::Int32,
+                dtype: DataType::Boolean,
                 data: Arc::new(data),
             })
-        }
-        DataType::String => {
-            let strings = proto
-                .string_data
-                .iter()
-                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                .collect::<Vec<_>>();
-            if strings.len() != total_elements {
-                return Err(OrtError::InvalidTensorData(
-                    "String tensor data length mismatch".into(),
-                ));
-            }
-            Ok(OrtValue::Tensor {
-                shape,
-                dtype: DataType::String,
-                data: Arc::new(strings.join("").into_bytes()),
-            })
-        }
+            
+        },
     }
 }
 

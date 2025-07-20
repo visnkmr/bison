@@ -744,11 +744,17 @@ pub enum OrtError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Type mismatch: {0}")]
-    TypeMismatch(&'static str),
+    TypeMismatch(String),
     #[error("Index error: {0}")]
     IndexError(&'static str),
     #[error("Invalid model")]
     InvalidModel,
+    #[error("Invalid input count")]
+    InvalidInputCount,
+    #[error("invalid input shape")]
+    InvalidInputShape(String),
+    #[error("Data cannot be accessed")]
+    DataAccessError(String),
     #[error("Missing1 input: {0}")]
     MissingInput(String),
     #[error("Unsupported op: {0}")]
@@ -769,6 +775,7 @@ pub enum Dimensions {
     Fixed(usize),
     Symbolic(String),
 }
+
 #[derive(Clone, Serialize)]
 pub enum OrtValue {
     Tensor {
@@ -873,9 +880,6 @@ impl fmt::Display for OrtValue {
 
 
 impl OrtValue {
-    // pub fn print(&self){
-    //     println!("{:?}",self.Te)
-    // }
     pub fn dtype(&self)->&DataType{
         match self {
             OrtValue::Tensor { dtype, .. } => dtype,
@@ -888,6 +892,10 @@ impl OrtValue {
             _ => panic!("Shape only available for Tensor variant"),
         }
     }
+    // pub fn print(&self){
+    //     println!("{:?}",self.Te)
+    // }
+    
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -956,9 +964,9 @@ impl ShapeInference {
         "Add" | "Sub" | "Mul" | "Div" => {
             // Element-wise operations require matching shapes
             if input_shapes[0] != input_shapes[1] {
-                return Err(OrtError::TypeMismatch(&(""
-                    // "Input shapes must match for {}: got {:?} and {:?}", 
-                    // node.op_type, input_shapes[0], input_shapes[1]
+                return Err(OrtError::TypeMismatch(format!(
+                     "Input shapes must match for {}: got {:?} and {:?}", 
+                    node.op_type, input_shapes[0], input_shapes[1]
                 )));
             }
             Ok(vec![input_shapes[0].clone()])
@@ -1028,9 +1036,8 @@ impl ShapeInference {
             let n = shape2[ndim2 - 1].clone(); // Columns of second matrix
             // Check compatibility: shape1[..., k] and shape2[..., k]
             if ndim1 > 1 && ndim2 > 1 && shape1[ndim1 - 1] != shape2[ndim2 - 2] {
-                return Err(OrtError::TypeMismatch(&(""
-                    // "MatMul inner dimensions mismatch: {} vs {}", 
-                    // shape1[ndim1 - 1], shape2[ndim2 - 2]
+                return Err(OrtError::TypeMismatch(format!( "MatMul inner dimensions mismatch: {:?} vs {:?}", 
+                     shape1[ndim1 - 1], shape2[ndim2 - 2]
                 )));
             }
             let mut out_shape = shape1[..ndim1 - 2].to_vec();
@@ -1176,9 +1183,9 @@ impl ShapeInference {
             let mut concat_dim = 0;
             for shape in input_shapes {
                 if shape.len() != output_shape.len() {
-                    return Err(OrtError::TypeMismatch(&(""
-                    // return Err(OrtError::TypeMismatch(&format!(
-                    //     "Concat input shapes must have same rank: {:?}", input_shapes
+                    // return Err(OrtError::TypeMismatch(&(""
+                    return Err(OrtError::TypeMismatch(format!(
+                        "Concat input shapes must have same rank: {:?}", input_shapes
                     )));
                 }
                 for (i, dim) in shape.iter().enumerate() {
@@ -1191,9 +1198,9 @@ impl ShapeInference {
                             break;
                         }
                     } else if shape[i] != output_shape[i] {
-                        return Err(OrtError::TypeMismatch(&(""
-                        // return Err(OrtError::TypeMismatch(&format!(""
-                            // "Concat non-axis dimensions must match: {:?}", input_shapes
+                        // return Err(OrtError::TypeMismatch(&(""
+                        return Err(OrtError::TypeMismatch(format!(
+                            "Concat non-axis dimensions must match: {:?}", input_shapes
                         )));
                     }
                 }
@@ -1421,7 +1428,7 @@ impl OrtEngine {
                         tensor_map.insert(out_name.clone(), out_value);
                     }
                 } else {
-                    return Err(OrtError::TypeMismatch("Expected multiple outputs but got single value"));
+                    return Err(OrtError::TypeMismatch(format!("Expected multiple outputs but got single value")));
                 }
             }
         }

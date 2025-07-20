@@ -800,37 +800,37 @@ impl fmt::Display for OrtValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OrtValue::Tensor { shape, dtype, data } => {
-                write!(f, "Tensor {{ shape: {:?}, dtype: {:?}", shape, dtype)?;
+                write!(f, "Tensor {{ shape: {:?}, dtype: {:?}", shape, dtype)
                 // Summarize data based on dtype
-                let preview_len = 5; // Show up to 5 elements
-                match dtype {
-                    DataType::Float => {
-                                        let float_data: Vec<f32> = data
-                                            .chunks_exact(4)
-                                            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-                                            .collect();
-                                        let preview = float_data.iter().take(preview_len).collect::<Vec<_>>();
-                                        write!(f, ", data: [{} elements, first {:?}]", float_data.len(), preview)?;
-                                    }
-                    DataType::Int64 => {
-                                        let int_data: Vec<i64> = data
-                                            .chunks_exact(8)
-                                            .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
-                                            .collect();
-                                        let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
-                                        write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
-                                    }
-                    DataType::Int32 => {
-                                        let int_data: Vec<i32> = data
-                                            .chunks_exact(4)
-                                            .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
-                                            .collect();
-                                        let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
-                                        write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
-                                    }
-                    DataType::String => todo!(),
-                }
-                write!(f, " }}")
+                // let preview_len = 5; // Show up to 5 elements
+                // match dtype {
+                //     DataType::Float => {
+                //                         let float_data: Vec<f32> = data
+                //                             .chunks_exact(4)
+                //                             .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                //                             .collect();
+                //                         let preview = float_data.iter().take(preview_len).collect::<Vec<_>>();
+                //                         write!(f, ", data: [{} elements, first {:?}]", float_data.len(), preview)?;
+                //                     }
+                //     DataType::Int64 => {
+                //                         let int_data: Vec<i64> = data
+                //                             .chunks_exact(8)
+                //                             .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+                //                             .collect();
+                //                         let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
+                //                         write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
+                //                     }
+                //     DataType::Int32 => {
+                //                         let int_data: Vec<i32> = data
+                //                             .chunks_exact(4)
+                //                             .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+                //                             .collect();
+                //                         let preview = int_data.iter().take(preview_len).collect::<Vec<_>>();
+                //                         write!(f, ", data: [{} elements, first {:?}]", int_data.len(), preview)?;
+                //                     }
+                //     DataType::String => todo!(),
+                // }
+                // write!(f, " }}")
             }
             OrtValue::Sequence(seq) => {
                 write!(f, "Sequence(len={}) [", seq.len())?;
@@ -859,6 +859,8 @@ impl fmt::Display for OrtValue {
         }
     }
 }
+
+
 impl OrtValue {
     // pub fn print(&self){
     //     println!("{:?}",self.Te)
@@ -1222,9 +1224,9 @@ impl OrtEngine {
 
     fn register_core_ops(&mut self) {
         self.node_registry.insert("Add".into(), Self::op_add);
-        // self.node_registry.insert("Sub".into(), Self::op_sub);
-        // self.node_registry.insert("Mul".into(), Self::op_mul);
-        // self.node_registry.insert("Div".into(), Self::op_div);
+        self.node_registry.insert("Sub".into(), Self::op_sub);
+        self.node_registry.insert("Mul".into(), Self::op_mul);
+        self.node_registry.insert("Div".into(), Self::op_div);
         // self.node_registry.insert("CumSum".into(), Self::op_cumsum);
         // self.node_registry.insert("Range".into(), Self::op_range);
         // self.node_registry.insert("Shape".into(), Self::op_shape);
@@ -1241,7 +1243,7 @@ impl OrtEngine {
         // self.node_registry.insert("Sigmoid".into(), Self::op_sigmoid);
         // self.node_registry.insert("ReduceMean".into(), Self::op_reduce_mean);
         // self.node_registry.insert("Atan".into(), Self::op_atan);
-        // self.node_registry.insert("Pow".into(), Self::op_pow);
+        self.node_registry.insert("Pow".into(), Self::op_pow);
         // self.node_registry.insert("Gather".into(), Self::op_gather);
         // self.node_registry.insert("Softmax".into(), Self::op_softmax);
         // self.node_registry.insert("Unsqueeze".into(), Self::op_unsqueeze);
@@ -1584,9 +1586,9 @@ pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
     let mut vendor_ops = HashSet::new();
     println!("\nModel Initializers:");
 
-    for initializers in &graph.initializer {
-        println!("{:?}",initializers)
-    }
+    // for initializers in &graph.initializer {
+    //     println!("{:?}",initializers)
+    // }
     // Print model inputs
     println!("\nModel Inputs:");
     for input in &graph.input {
@@ -1651,7 +1653,7 @@ pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
 }
 
 fn main() -> Result<()> {
-    //  OrtEngine::print_model_info("./kokoro-v1.0.onnx")?;
+     print_model_info("./kokoro-v1.0.onnx")?;
     let engine = OrtEngine::new("./corrected_add_model_i16.onnx")?;
     // let engine = OrtEngine::new("./kokoro-v1.0-simplified.onnx")?;
     // let graph=engine.model.graph.unwrap();

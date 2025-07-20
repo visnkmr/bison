@@ -27,7 +27,309 @@ pub enum ArrayDResult {
     Int32(ArrayD<i32>),
 }
 
+pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, OrtError> {
+        fn is_scalar_like(arr: &ArrayDResult) -> bool {
+        match arr {
+            ArrayDResult::Float(arr) => arr.len() == 1,
+            ArrayDResult::Int64(arr) => arr.len() == 1,
+            ArrayDResult::Int32(arr) => arr.len() == 1,
+        }
+    }
 
+    // Extract scalar value from b if scalar-like
+    // fn get_scalar_value(b: &ArrayDResult) -> Result<f64, OrtError> {
+        // let b_value: &f32=match b {
+        //     ArrayDResult::Float(arr) if arr.len() == 1 => Ok(arr.first().unwrap().into()),
+        //     ArrayDResult::Int64(arr) if arr.len() == 1 => Ok(arr.first().unwrap().into() as &f32),
+        //     ArrayDResult::Int32(arr) if arr.len() == 1 => Ok(arr.first().unwrap().into() as &f32),
+        //     _ => Err(()
+        //         // OrtError::ShapeMismatch("Exponent must be a scalar-like value".into())
+        //     ),
+        // }.unwrap();
+    // }
+
+    // Ensure b is scalar-like
+    // if !is_scalar_like(b) {
+    //     return Err(OrtError::ShapeMismatch("Exponent must be a scalar-like value".into()));
+    // }
+
+    // Get the scalar value of b
+    // let b_value = get_scalar_value(b)?;
+    match (a, b) {
+        (ArrayDResult::Float(_), ArrayDResult::Float(_)) => {
+            let mut raiseto;
+            let mut array;
+            let mut raisetoval;
+            if is_scalar_like(a){
+                raiseto=a;
+                array=b;
+                
+            }
+            else if is_scalar_like(b){
+                raiseto=b;
+                array=a;
+            }
+            else{
+                return Err(OrtError::TypeMismatch(("")))
+            };
+            if let ArrayDResult::Float(raisetowhat)=raiseto{
+                raisetoval=raisetowhat.first().unwrap().clone();
+            }
+            else{
+                return Err(OrtError::TypeMismatch(""))
+            }
+
+            if let ArrayDResult::Float(arrayinp)=array{
+                let result = arrayinp.mapv(|x| x.powf(raisetoval));
+                return Ok(ArrayDResult::Float(result))
+            }
+            else{
+                return Err(OrtError::TypeMismatch(("")))
+            }
+        }
+        (ArrayDResult::Int64(_), ArrayDResult::Int64(_)) => {
+            let mut raiseto;
+            let mut array;
+            let mut raisetoval;
+            if is_scalar_like(a){
+                raiseto=a;
+                array=b;
+                
+            }
+            else if is_scalar_like(b){
+                raiseto=b;
+                array=a;
+            }
+            else{
+                return Err(OrtError::TypeMismatch(("")))
+            };
+            if let ArrayDResult::Int64(raisetowhat)=raiseto{
+                raisetoval=raisetowhat.first().unwrap().clone();
+            }
+            else{
+                return Err(OrtError::TypeMismatch(("")))
+            }
+
+            if let ArrayDResult::Int64(arrayinp)=array{
+                let result = arrayinp.mapv(|x| x.pow(raisetoval as u32));
+                return Ok(ArrayDResult::Int64(result))
+            }
+            else{
+                return Err(OrtError::TypeMismatch(("")))
+            }
+        }
+        (ArrayDResult::Int32(_), ArrayDResult::Int32(_)) => {
+            let mut raiseto;
+            let mut array;
+            let mut raisetoval;
+            if is_scalar_like(a){
+                raiseto=a;
+                array=b;
+                
+            }
+            else if is_scalar_like(b){
+                raiseto=b;
+                array=a;
+            }
+            else{
+                return Err(OrtError::TypeMismatch(("")))
+            };
+            if let ArrayDResult::Int32(raisetowhat)=raiseto{
+                raisetoval=raisetowhat.first().unwrap().clone();
+            }
+            else{
+                return Err(OrtError::TypeMismatch(("")))
+            }
+
+            if let ArrayDResult::Int32(arrayinp)=array{
+                let result = arrayinp.mapv(|x| x.pow(raisetoval as u32));
+                return Ok(ArrayDResult::Int32(result))
+            }
+            else{
+                return Err(OrtError::TypeMismatch(("")))
+            }
+        }
+        (a, b) => {
+            let a_type = match a {
+                ArrayDResult::Float(_) => "Float",
+                ArrayDResult::Int64(_) => "Int64",
+                ArrayDResult::Int32(_) => "Int32",
+            };
+            let b_type = match b {
+                ArrayDResult::Float(_) => "Float",
+                ArrayDResult::Int64(_) => "Int64",
+                ArrayDResult::Int32(_) => "Int32",
+            };
+            let retstr=format!("{}{}",a_type.to_string(),
+                b_type.to_string());
+                println!("{}",retstr);
+            Err(OrtError::TypeMismatch(""))
+        }
+    }
+}
+
+pub fn sqrt_array(a: &ArrayDResult) -> Result<ArrayDResult, OrtError> {
+    match (a) {
+        ArrayDResult::Float(arrayinp) => {
+                let result = arrayinp.mapv(|x| x.sqrt());
+                return Ok(ArrayDResult::Float(result))
+        }
+        ArrayDResult::Int32(arrayinp) => {
+                let result = arrayinp.mapv(|x| x.isqrt());
+                return Ok(ArrayDResult::Int32(result))
+        }
+        ArrayDResult::Int64(arrayinp) => {
+                let result = arrayinp.mapv(|x| x.isqrt());
+                return Ok(ArrayDResult::Int64(result))
+        }
+        
+        _ => {
+            Err(OrtError::TypeMismatch(""))
+        }
+    }
+}
+
+// Function to compute a.pow(b) for ArrayDResult types
+// pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, OrtError> {
+//     // Helper function to check if an ArrayDResult is scalar-like (0-dimensional or single element)
+//     fn is_scalar_like(arr: &ArrayDResult) -> bool {
+//         match arr {
+//             ArrayDResult::Float(arr) => arr.len() == 1,
+//             ArrayDResult::Int64(arr) => arr.len() == 1,
+//             ArrayDResult::Int32(arr) => arr.len() == 1,
+//         }
+//     }
+
+//     // Extract scalar value from b if scalar-like
+//     // fn get_scalar_value(b: &ArrayDResult) -> Result<f64, OrtError> {
+//         let b_value: &f32=match b {
+//             ArrayDResult::Float(arr) if arr.len() == 1 => Ok(arr.first().unwrap().into()),
+//             ArrayDResult::Int64(arr) if arr.len() == 1 => Ok(arr.first().unwrap().into() as &f32),
+//             ArrayDResult::Int32(arr) if arr.len() == 1 => Ok(arr.first().unwrap().into() as &f32),
+//             _ => Err(()
+//                 // OrtError::ShapeMismatch("Exponent must be a scalar-like value".into())
+//             ),
+//         }.unwrap();
+//     // }
+
+//     // Ensure b is scalar-like
+//     // if !is_scalar_like(b) {
+//     //     return Err(OrtError::ShapeMismatch("Exponent must be a scalar-like value".into()));
+//     // }
+
+//     // Get the scalar value of b
+//     // let b_value = get_scalar_value(b)?;
+
+//     match (a, b) {
+//         (ArrayDResult::Float(arr_a), _) => {
+//             // For Float, we can use powf for fractional or integer exponents
+//             let result = arr_a.mapv(|x| x.powf(b_value as f32));
+//             Ok(ArrayDResult::Float(result))
+//         }
+//         (ArrayDResult::Int64(arr_a), ArrayDResult::Int64(_)) => {
+//             // For Int64, ensure b is an integer
+//             let b_int = b_value as i64;
+//             if ((b_value - (b_int as f32)) as f64).abs() > f64::EPSILON {
+//                 return Err(OrtError::TypeMismatch(
+//                     "Int64 arrays require integer exponents".into(),
+//                 ));
+//             }
+//             if b_int < 0 {
+//                 return Err(OrtError::TypeMismatch(
+//                     "Negative exponents not supported for Int64 arrays".into(),
+//                 ));
+//             }
+//             let result = arr_a.mapv(|x| x.pow(b_int as u32));
+//             Ok(ArrayDResult::Int64(result))
+//         }
+//         (ArrayDResult::Int32(arr_a), ArrayDResult::Int32(_) | ArrayDResult::Int64(_)) => {
+//             // For Int32, ensure b is an integer
+//             let b_int = b_value as i32;
+//             if ((b_value - (b_int as f32)) as f64).abs() > f64::EPSILON {
+//                 return Err(OrtError::TypeMismatch(
+//                     "Int32 arrays require integer exponents".into(),
+//                 ));
+//             }
+//             if b_int < 0 {
+//                 return Err(OrtError::TypeMismatch(
+//                     "Negative exponents not supported for Int32 arrays".into(),
+//                 ));
+//             }
+//             let result = arr_a.mapv(|x| x.pow(b_int as u32));
+//             Ok(ArrayDResult::Int32(result))
+//         }
+//         _ => Err(OrtError::TypeMismatch(
+//             "Incompatible types for power operation".into(),
+//         )),
+//     }
+// }
+
+use num_traits::{Pow, Float}; // Needed for power and other float operations
+
+// Implement power operation
+impl ArrayDResult {
+    // pub fn len(self)->usize{
+        
+    //     match self {
+    //         ArrayDResult::Float(a) => a.len(),
+    //         ArrayDResult::Int64(a) => a.len(),
+    //         ArrayDResult::Int32(a) => a.len(),
+    //     }
+    // }
+    // pub fn pow(self, exponent: f32) -> Result<Self, ArrayDResultError> {
+    //     match self {
+    //         ArrayDResult::Float(a) => Ok(ArrayDResult::Float(
+    //             a.mapv(|x| x.powf(exponent))
+    //         )),
+    //         ArrayDResult::Int64(_) => Err(ArrayDResultError::MismatchedVariants(
+    //             "Int64".to_string(),
+    //             "pow requires Float".to_string(),
+    //         )),
+    //         ArrayDResult::Int32(_) => Err(ArrayDResultError::MismatchedVariants(
+    //             "Int32".to_string(),
+    //             "pow requires Float".to_string(),
+    //         )),
+    //     }
+    // }
+
+    // pub fn sqrt(self) -> Result<Self, ArrayDResultError> {
+    //     match self {
+    //         ArrayDResult::Float(a) => {
+    //             if a.iter().any(|&x| x < 0.0) {
+    //                 return Err(ArrayDResultError::MismatchedVariants(
+    //                     "Float".to_string(),
+    //                     "sqrt requires non-negative values".to_string(),
+    //                 ));
+    //             }
+    //             Ok(ArrayDResult::Float(a.mapv(|x| x.sqrt())))
+    //         }
+    //         ArrayDResult::Int64(_) => Err(ArrayDResultError::MismatchedVariants(
+    //             "Int64".to_string(),
+    //             "sqrt requires Float".to_string(),
+    //         )),
+    //         ArrayDResult::Int32(_) => Err(ArrayDResultError::MismatchedVariants(
+    //             "Int32".to_string(),
+    //             "sqrt requires Float".to_string(),
+    //         )),
+    //     }
+    // }
+
+    // pub fn exp(self) -> Result<Self, ArrayDResultError> {
+    //     match self {
+    //         ArrayDResult::Float(a) => Ok(ArrayDResult::Float(
+    //             a.mapv(|x| x.exp())
+    //         )),
+    //         ArrayDResult::Int64(_) => Err(ArrayDResultError::MismatchedVariants(
+    //             "Int64".to_string(),
+    //             "exp requires Float".to_string(),
+    //         )),
+    //         ArrayDResult::Int32(_) => Err(ArrayDResultError::MismatchedVariants(
+    //             "Int32".to_string(),
+    //             "exp requires Float".to_string(),
+    //         )),
+    //     }
+    // }
+}
 
 macro_rules! impl_op {
     ($trait:ident, $method:ident, $op:tt) => {
@@ -372,4 +674,187 @@ pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
         }
         _ => Err(OrtError::TypeMismatch("Expected tensor")),
     }
+}
+
+
+
+#[cfg(test)]
+mod tests {
+
+    use super::*; // Import the parent module's items (pow_array, ArrayDResult, OrtError)
+    use ndarray::{ArrayD, IxDyn};
+
+    // Helper function to create ArrayDResult from a Vec and shape
+    fn create_float_array(data: Vec<f32>, shape: &[usize]) -> ArrayDResult {
+        ArrayDResult::Float(
+            ArrayD::from_shape_vec(IxDyn(shape), data).expect("Failed to create float array"),
+        )
+    }
+
+    fn create_int64_array(data: Vec<i64>, shape: &[usize]) -> ArrayDResult {
+        ArrayDResult::Int64(
+            ArrayD:: from_shape_vec(IxDyn(shape), data).expect("Failed to create int64 array"),
+        )
+    }
+
+    fn create_int32_array(data: Vec<i32>, shape: &[usize]) -> ArrayDResult {
+        ArrayDResult::Int32(
+            ArrayD::from_shape_vec(IxDyn(shape), data).expect("Failed to create int32 array"),
+        )
+    }
+
+    #[test]
+    fn test_float_base_float_exponent() {
+        let a = create_float_array(vec![2.0, 3.0, 4.0], &[3]); // Array [2.0, 3.0, 4.0]
+        let b = create_float_array(vec![2.0], &[1]); // Scalar 2.0
+        let result = pow_array(&a, &b).expect("Expected successful pow operation");
+        
+        if let ArrayDResult::Float(arr) = result {
+            assert_eq!(arr, ArrayD::from_shape_vec(IxDyn(&[3]), vec![4.0, 9.0, 16.0]).unwrap());
+        } else {
+            panic!("Expected Float result");
+        }
+    }
+
+    #[test]
+    fn test_float_exponent_float_base() {
+        let a = create_float_array(vec![2.0], &[1]); // Scalar 2.0
+        let b = create_float_array(vec![2.0, 3.0, 4.0], &[3]); // Array [2.0, 3.0, 4.0]
+        let result = pow_array(&a, &b).expect("Expected successful pow operation");
+        println!("-----------------{:?}",result);
+        if let ArrayDResult::Float(arr) = result {
+            assert_eq!(arr, ArrayD::from_shape_vec(IxDyn(&[3]), vec![4.0, 9.0, 16.0]).unwrap());
+        } else {
+            panic!("Expected Float result");
+        }
+    }
+
+    #[test]
+    fn test_int64_base_int64_exponent() {
+        let a = create_int64_array(vec![2, 3, 4], &[3]); // Array [2, 3, 4]
+        let b = create_int64_array(vec![2], &[1]); // Scalar 2
+        let result = pow_array(&a, &b).expect("Expected successful pow operation");
+        if let ArrayDResult::Int64(arr) = result {
+            assert_eq!(arr, ArrayD::from_shape_vec(IxDyn(&[3]), vec![4, 9, 16]).unwrap());
+        } else {
+            panic!("Expected Int64 result");
+        }
+    }
+
+    #[test]
+    fn test_int64_exponent_int64_base() {
+        let a = create_int64_array(vec![2], &[1]); // Scalar 2
+        let b = create_int64_array(vec![2, 3, 4], &[3]); // Array [2, 3, 4]
+        let result = pow_array(&a, &b).expect("Expected successful pow operation");
+        if let ArrayDResult::Int64(arr) = result {
+            assert_eq!(arr, ArrayD::from_shape_vec(IxDyn(&[3]), vec![4, 9, 16]).unwrap());
+        } else {
+            panic!("Expected Int64 result");
+        }
+    }
+
+    #[test]
+    fn test_int32_base_int32_exponent() {
+        let a = create_int32_array(vec![2, 3, 4], &[3]); // Array [2, 3, 4]
+        let b = create_int32_array(vec![2], &[1]); // Scalar 2
+        let result = pow_array(&a, &b).expect("Expected successful pow operation");
+        if let ArrayDResult::Int32(arr) = result {
+            assert_eq!(arr, ArrayD::from_shape_vec(IxDyn(&[3]), vec![4, 9, 16]).unwrap());
+        } else {
+            panic!("Expected Float result");
+        }
+    }
+
+    #[test]
+    fn test_int32_exponent_int32_base() {
+        let a = create_int32_array(vec![2], &[1]); // Scalar 2
+        let b = create_int32_array(vec![2, 3, 4], &[3]); // Array [2, 3, 4]
+        let result = pow_array(&a, &b).expect("Expected successful pow operation");
+        if let ArrayDResult::Int32(arr) = result {
+            assert_eq!(arr, ArrayD::from_shape_vec(IxDyn(&[3]), vec![4, 9, 16]).unwrap());
+        } else {
+            panic!("Expected Float result");
+        }
+    }
+
+    #[test]
+    fn test_type_mismatch_float_int64() {
+        let a = create_float_array(vec![2.0, 3.0], &[2]); // Float array
+        let b = create_int64_array(vec![2], &[1]); // Int64 scalar
+        let result = pow_array(&a, &b);
+        assert!(matches!(result, Err(OrtError::TypeMismatch(_))));
+    }
+
+    #[test]
+    fn test_type_mismatch_int64_float() {
+        let a = create_int64_array(vec![2, 3], &[2]); // Int64 array
+        let b = create_float_array(vec![2.0], &[1]); // Float scalar
+        let result = pow_array(&a, &b);
+        assert!(matches!(result, Err(OrtError::TypeMismatch(_))));
+    }
+
+    #[test]
+    fn test_type_mismatch_int32_float() {
+        let a = create_int32_array(vec![2, 3], &[2]); // Int32 array
+        let b = create_float_array(vec![2.0], &[1]); // Float scalar
+        let result = pow_array(&a, &b);
+        assert!(matches!(result, Err(OrtError::TypeMismatch(_))));
+    }
+
+    #[test]
+    fn test_type_mismatch_float_int32() {
+        let a = create_float_array(vec![2.0, 3.0], &[2]); // Float array
+        let b = create_int32_array(vec![2], &[1]); // Int32 scalar
+        let result = pow_array(&a, &b);
+        assert!(matches!(result, Err(OrtError::TypeMismatch(_))));
+    }
+
+    #[test]
+    fn test_non_scalar_exponent() {
+        let a = create_float_array(vec![2.0, 3.0], &[2]); // Float array
+        let b = create_float_array(vec![2.0, 3.0], &[2]); // Non-scalar float array
+        let result = pow_array(&a, &b);
+        println!("----------{:?}",result);
+        assert!(matches!(result, Err(OrtError::TypeMismatch(_))));
+    }
+
+    #[test]
+    fn test_zero_exponent_float() {
+        let a = create_float_array(vec![2.0, 3.0, 4.0], &[3]); // Array [2.0, 3.0, 4.0]
+        let b = create_float_array(vec![0.0], &[1]); // Scalar 0.0
+        let result = pow_array(&a, &b).expect("Expected successful pow operation");
+        if let ArrayDResult::Float(arr) = result {
+            assert_eq!(arr, ArrayD::from_shape_vec(IxDyn(&[3]), vec![1.0, 1.0, 1.0]).unwrap());
+        } else {
+            panic!("Expected Float result");
+        }
+    }
+
+    #[test]
+    fn test_zero_exponent_int64() {
+        let a = create_int64_array(vec![2, 3, 4], &[3]); // Array [2, 3, 4]
+        let b = create_int64_array(vec![0], &[1]); // Scalar 0
+        let result = pow_array(&a, &b).expect("Expected successful pow operation");
+        println!("-----------{:?}",result);
+
+        if let ArrayDResult::Int64(arr) = result {
+            assert_eq!(arr, ArrayD::from_shape_vec(IxDyn(&[3]), vec![1, 1, 1]).unwrap());
+        } else {
+            panic!("Expected Int64 result");
+        }
+    }
+
+    #[test]
+    fn test_zero_exponent_int32() {
+        let a = create_int32_array(vec![2, 3, 4], &[3]); // Array [2, 3, 4]
+        let b = create_int32_array(vec![0], &[1]); // Scalar 0
+        let result = pow_array(&a, &b).expect("Expected successful pow operation");
+        println!("-----------{:?}",result);
+        if let ArrayDResult::Int32(arr) = result {
+            assert_eq!(arr, ArrayD::from_shape_vec(IxDyn(&[3]), vec![1, 1, 1]).unwrap());
+        } else {
+            panic!("Expected Float result");
+        }
+    }
+    
 }

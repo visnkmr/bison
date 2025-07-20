@@ -1,7 +1,7 @@
 // core_ops.rs - Implementation of core operations
 // This file contains implementations of functions declared in main.rs
 
-use crate::{convert::{ndarray_to_ort, ort_to_ndarray}, *};
+use crate::{convert::{ndarray_to_ort, ort_to_ndarray, pow_array, sqrt_array}, *};
 
 // Implementations of functions will go here
 
@@ -59,69 +59,199 @@ impl OrtEngine{
                 ))
             }
         };
+        let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        let result = array1 + array2;
+        Ok(ndarray_to_ort(result.unwrap(), *dtype))
+        // Handle different data types
+        // match dtype {
+        //     DataType::Float => {
+        //         let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        //         let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        //         let result = array1 + array2;
+        //         Ok(ndarray_to_ort(result.unwrap(), DataType::Float))
+        //     },
+        //     DataType::Int64 => {
+        //         let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        //         let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        //         let result = array1 + array2;
+        //         Ok(ndarray_to_ort(result.unwrap(), DataType::Int64))
+        //     },
+        //     DataType::Int32 => {
+        //         let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        //         let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        //         let result = array1 + array2;
+        //         Ok(ndarray_to_ort(result.unwrap(), DataType::Int32))
+        //     },
+        //     _ => Err(OrtError::TypeMismatch("Unsupported data type for Add operation")),
+        // }
+    }
+
+    
+        pub fn op_sub(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Check if both inputs have the same data type
+        let dtype = match (inputs.get(0), inputs.get(1)) {
+            (
+                Some(OrtValue::Tensor { dtype: dtype1, .. }),
+                Some(OrtValue::Tensor { dtype: dtype2, .. }),
+            ) if dtype1 == dtype2 => dtype1,
+            _ => {
+                return Err(OrtError::TypeMismatch(
+                    "Sub requires two tensors with matching data types",
+                ))
+            }
+        };
+        let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        let result = array1 - array2;
+        Ok(ndarray_to_ort(result.unwrap(), *dtype))
 
         // Handle different data types
-        match dtype {
-            DataType::Float => {
-                let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
-                let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
-                let result = array1 + array2;
-                Ok(ndarray_to_ort(result.unwrap(), DataType::Float))
-            },
-            DataType::Int64 => {
-                let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
-                let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
-                let result = array1 + array2;
-                Ok(ndarray_to_ort(result.unwrap(), DataType::Int64))
-            },
-            DataType::Int32 => {
-                let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
-                let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
-                let result = array1 + array2;
-                Ok(ndarray_to_ort(result.unwrap(), DataType::Int32))
-            },
-            _ => Err(OrtError::TypeMismatch("Unsupported data type for Add operation")),
+        // match dtype {
+        //     DataType::Float => {
+        //         let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        //         let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        //         let result = array1 - array2;
+        //         Ok(ndarray_to_ort(result, DataType::Float))
+        //     },
+        //     DataType::Int64 => {
+        //         let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        //         let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        //         let result = array1 - array2;
+        //         Ok(ndarray_to_ort(result, DataType::Int64))
+        //     },
+        //     DataType::Int32 => {
+        //         let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        //         let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        //         let result = array1 - array2;
+        //         Ok(ndarray_to_ort(result, DataType::Int32))
+        //     },
+        //     _ => Err(OrtError::TypeMismatch("Unsupported data type for Sub operation")),
+        // }
+    }
+
+    pub fn op_mul(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Check if both inputs have the same data type
+        let dtype = match (inputs.get(0), inputs.get(1)) {
+            (
+                Some(OrtValue::Tensor { dtype: dtype1, .. }),
+                Some(OrtValue::Tensor { dtype: dtype2, .. }),
+            ) if dtype1 == dtype2 => dtype1,
+            _ => {
+                return Err(OrtError::TypeMismatch(
+                    "Mul requires two tensors with matching data types",
+                ))
+            }
+        };
+
+        let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        let result = array1 * array2;
+        Ok(ndarray_to_ort(result.unwrap(), *dtype))
+        // Handle different data types
+        // match dtype {
+        //     DataType::Float => {
+        //         let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        //         let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        //         let result = array1 * array2;
+        //         Ok(ndarray_to_ort(result, DataType::Float))
+        //     },
+        //     DataType::Int64 => {
+        //         let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        //         let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        //         let result = array1 * array2;
+        //         Ok(ndarray_to_ort(result, DataType::Int64))
+        //     },
+        //     DataType::Int32 => {
+        //         let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        //         let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        //         let result = array1 * array2;
+        //         Ok(ndarray_to_ort(result, DataType::Int32))
+        //     },
+        //     _ => Err(OrtError::TypeMismatch("Unsupported data type for Mul operation")),
+        // }
+    }
+    
+        pub fn op_div(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Check if both inputs have the same data type
+        let dtype = match (inputs.get(0), inputs.get(1)) {
+            (
+                Some(OrtValue::Tensor { dtype: dtype1, .. }),
+                Some(OrtValue::Tensor { dtype: dtype2, .. }),
+            ) if dtype1 == dtype2 => dtype1,
+            _ => {
+                return Err(OrtError::TypeMismatch(
+                    "Div requires two tensors with matching data types",
+                ))
+            }
+        };
+
+        let array1 = ort_to_ndarray(inputs.get(0).unwrap())?;
+        let array2 = ort_to_ndarray(inputs.get(1).unwrap())?;
+        let result = array1 / array2;
+        Ok(ndarray_to_ort(result.unwrap(), *dtype))
+    }
+            
+    pub fn op_pow(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+            let input1 = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Pow requires two tensors"))?;
+            let input2 = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Pow requires two tensors"))?;
+
+            match (input1, input2) {
+                (OrtValue::Tensor { dtype: dtype1, .. }, OrtValue::Tensor { dtype: dtype2, .. }) 
+                if dtype1 == dtype2 => {
+                   
+            if let Ok(result)=pow_array(&ort_to_ndarray(input1)?, &ort_to_ndarray(input2)?){
+                Ok(ndarray_to_ort(result, *dtype1))
+            }
+            else{
+                Err(OrtError::TypeMismatch("Pow requires two tensors with matching data types"))
+            }
+                },
+                _ => Err(OrtError::TypeMismatch("Pow requires two tensors with matching data types")),
+            }
+        
+    }
+    
+        pub fn op_sqrt(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        let input = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Sqrt requires one tensor"))?;
+        match (input) {
+            (OrtValue::Tensor { dtype: dtype1, .. })=>{
+                if let Ok(result)=sqrt_array(&ort_to_ndarray(input)?){
+                    Ok(ndarray_to_ort(result, *dtype1))
+                }
+                else{
+                    Err(OrtError::TypeMismatch("Pow requires two tensors with matching data types"))
+                }
+
+            }
+            _=>{
+                Err(OrtError::TypeMismatch("Pow requires two tensors with matching data types"))
+            }
         }
     }
     
-    //     pub fn op_sub(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-    //     // Check if both inputs have the same data type
-    //     let dtype = match (inputs.get(0), inputs.get(1)) {
-    //         (
-    //             Some(OrtValue::Tensor { dtype: dtype1, .. }),
-    //             Some(OrtValue::Tensor { dtype: dtype2, .. }),
-    //         ) if dtype1 == dtype2 => dtype1,
-    //         _ => {
-    //             return Err(OrtError::TypeMismatch(
-    //                 "Sub requires two tensors with matching data types",
-    //             ))
-    //         }
-    //     };
-
-    //     // Handle different data types
-    //     match dtype {
-    //         DataType::Float => {
-    //             let array1 = ort_to_ndarray::<f32>(inputs.get(0).unwrap())?;
-    //             let array2 = ort_to_ndarray::<f32>(inputs.get(1).unwrap())?;
-    //             let result = array1 - array2;
-    //             Ok(ndarray_to_ort(result, DataType::Float))
-    //         },
-    //         DataType::Int64 => {
-    //             let array1 = ort_to_ndarray::<i64>(inputs.get(0).unwrap())?;
-    //             let array2 = ort_to_ndarray::<i64>(inputs.get(1).unwrap())?;
-    //             let result = array1 - array2;
-    //             Ok(ndarray_to_ort(result, DataType::Int64))
-    //         },
-    //         DataType::Int32 => {
-    //             let array1 = ort_to_ndarray::<i32>(inputs.get(0).unwrap())?;
-    //             let array2 = ort_to_ndarray::<i32>(inputs.get(1).unwrap())?;
-    //             let result = array1 - array2;
-    //             Ok(ndarray_to_ort(result, DataType::Int32))
-    //         },
-    //         _ => Err(OrtError::TypeMismatch("Unsupported data type for Sub operation")),
-    //     }
-    // }
+        // Element-wise Operations
+        // pub fn op_exp(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        //     let input = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Exp requires one tensor"))?;
             
-    
+        //     match input {
+        //         OrtValue::Tensor { dtype: DataType::Float, .. } => {
+        //             let array = ort_to_ndarray::<f32>(input)?;
+        //             let result = array.mapv(|a| a.exp());
+        //             Ok(ndarray_to_ort(result, DataType::Float))
+        //         },
+        //         OrtValue::Tensor { dtype: DataType::Int64, .. } => {
+        //             let array = ort_to_ndarray::<i64>(input)?;
+        //             let result = array.mapv(|a| (a as f64).exp() as i64);
+        //             Ok(ndarray_to_ort(result, DataType::Int64))
+        //         },
+        //         OrtValue::Tensor { dtype: DataType::Int32, .. } => {
+        //             let array = ort_to_ndarray::<i32>(input)?;
+        //             let result = array.mapv(|a| (a as f64).exp() as i32);
+        //             Ok(ndarray_to_ort(result, DataType::Int32))
+        //         },
+        //         _ => Err(OrtError::TypeMismatch("Exp only supports Float, Int64, or Int32 tensors")),
+        //     }
+        // }
     
 }

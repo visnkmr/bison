@@ -6651,6 +6651,166 @@ match (a_array, b_array, c_array) {
             _ => Err(OrtError::TypeMismatch(format!("Unsupported data type for Slice operation: {:?}", input_dtype))),
         }
     }
+
+    pub fn op_where(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensors
+let condition = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Where requires condition tensor".to_string()))?;
+let x = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Where requires X tensor".to_string()))?;
+let y = inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("Where requires Y tensor".to_string()))?;
+
+// Check that condition is a boolean tensor
+match condition {
+    OrtValue::Tensor { dtype, .. } if *dtype != DataType::Boolean => {
+        return Err(OrtError::TypeMismatch("Condition tensor must be boolean".to_string()));
+    },
+    OrtValue::Tensor { .. } => {},
+    _ => return Err(OrtError::TypeMismatch("Condition input must be a tensor".to_string())),
+}
+
+// Check that X and Y have the same data type
+let output_dtype = match (x, y) {
+    (OrtValue::Tensor { dtype: dtype_x, .. }, OrtValue::Tensor { dtype: dtype_y, .. }) 
+    if dtype_x == dtype_y => dtype_x,
+    _ => return Err(OrtError::TypeMismatch("X and Y must have the same data type".to_string())),
+};
+
+// Convert inputs to ndarrays
+let condition_array = match ort_to_ndarray(condition)? {
+    ArrayDResult::Boolean(arr) => arr,
+    _ => return Err(OrtError::TypeMismatch("Condition tensor must contain boolean values".to_string())),
+};
+let x_array = ort_to_ndarray(x)?;
+let y_array = ort_to_ndarray(y)?;
+
+// Get shapes for broadcasting
+let condition_shape = condition_array.shape();
+let x_shape = match x {
+    OrtValue::Tensor { shape, .. } => shape.iter()
+        .map(|dim| match dim {
+            Dimensions::Fixed(size) => Ok(*size),
+            Dimensions::Symbolic(_) => Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Where".into())),
+        })
+        .collect::<OrtResult<Vec<usize>>>()?,
+    _ => unreachable!(),
+};
+let y_shape = match y {
+    OrtValue::Tensor { shape, .. } => shape.iter()
+        .map(|dim| match dim {
+            Dimensions::Fixed(size) => Ok(*size),
+            Dimensions::Symbolic(_) => Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Where".into())),
+        })
+        .collect::<OrtResult<Vec<usize>>>()?,
+    _ => unreachable!(),
+};
+
+// Calculate output shape (broadcasting)
+let max_rank = condition_shape.len().max(x_shape.len()).max(y_shape.len());
+let mut output_shape = vec![1; max_rank];
+
+// Apply broadcasting rules
+for (i, dim) in output_shape.iter_mut().enumerate().take(max_rank) {
+    let c_dim = if i < condition_shape.len() { condition_shape[condition_shape.len() - 1 - i] } else { 1 };
+    let x_dim = if i < x_shape.len() { x_shape[x_shape.len() - 1 - i] } else { 1 };
+    let y_dim = if i < y_shape.len() { y_shape[y_shape.len() - 1 - i] } else { 1 };
+    
+    let max_dim = c_dim.max(x_dim).max(y_dim);
+    
+    // Check compatibility
+    if (c_dim != 1 && c_dim != max_dim) || (x_dim != 1 && x_dim != max_dim) || (y_dim != 1 && y_dim != max_dim) {
+        return Err(OrtError::InvalidTensorData(
+            format!("Incompatible dimensions for broadcasting: {}, {}, {}", c_dim, x_dim, y_dim).into()
+        ));
+    }
+    
+    *dim = max_dim;
+}
+
+// Reverse the shape to match the original order
+output_shape.reverse();
+
+// Perform the where operation based on data type
+match (x_array, y_array) {
+    (ArrayDResult::Float(x_arr), ArrayDResult::Float(y_arr)) => {
+        // Create broadcasted views
+        let c_broadcast = condition_array.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast condition array".into()))?;
+        let x_broadcast = x_arr.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast X array".into()))?;
+        let y_broadcast = y_arr.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast Y array".into()))?;
+        
+        // Create output array
+        let result = ndarray::Array::from_shape_fn(ndarray::IxDyn(&output_shape), |idx| {
+            if c_broadcast[idx.slice()] {
+                x_broadcast[idx.slice()]
+            } else {
+                y_broadcast[idx.slice()]
+            }
+        });
+        
+        Ok(ndarray_to_ort(ArrayDResult::Float(result), *output_dtype))
+    },
+    (ArrayDResult::Int32(x_arr), ArrayDResult::Int32(y_arr)) => {
+        let c_broadcast = condition_array.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast condition array".into()))?;
+        let x_broadcast = x_arr.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast X array".into()))?;
+        let y_broadcast = y_arr.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast Y array".into()))?;
+        
+        let result = ndarray::Array::from_shape_fn(ndarray::IxDyn(&output_shape), |idx| {
+            if c_broadcast[idx.slice()] {
+                x_broadcast[idx.slice()]
+            } else {
+                y_broadcast[idx.slice()]
+            }
+        });
+        
+        Ok(ndarray_to_ort(ArrayDResult::Int32(result), *output_dtype))
+    },
+    (ArrayDResult::Int64(x_arr), ArrayDResult::Int64(y_arr)) => {
+        let c_broadcast = condition_array.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast condition array".into()))?;
+        let x_broadcast = x_arr.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast X array".into()))?;
+        let y_broadcast = y_arr.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast Y array".into()))?;
+        
+        let result = ndarray::Array::from_shape_fn(ndarray::IxDyn(&output_shape), |idx| {
+            if c_broadcast[idx.slice()] {
+                x_broadcast[idx.slice()]
+            } else {
+                y_broadcast[idx.slice()]
+            }
+        });
+        
+        Ok(ndarray_to_ort(ArrayDResult::Int64(result), *output_dtype))
+    },
+    (ArrayDResult::Boolean(x_arr), ArrayDResult::Boolean(y_arr)) => {
+        let c_broadcast = condition_array.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast condition array".into()))?;
+        let x_broadcast = x_arr.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast X array".into()))?;
+        let y_broadcast = y_arr.broadcast(ndarray::IxDyn(&output_shape))
+            .ok_or_else(|| OrtError::InvalidTensorData("Failed to broadcast Y array".into()))?;
+        
+        let result = ndarray::Array::from_shape_fn(ndarray::IxDyn(&output_shape), |idx| {
+            if c_broadcast[idx.slice()] {
+                x_broadcast[idx.slice()]
+            } else {
+                y_broadcast[idx.slice()]
+            }
+        });
+        
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), *output_dtype))
+    },
+    _ => Err(OrtError::TypeMismatch(format!("Unsupported data types for Where operation"))),
+}
+        
+    }
+
+
+
     }
 
 // Helper function to check if a data type is numeric

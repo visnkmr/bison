@@ -2522,7 +2522,114 @@ fn test_op_slice_negative_steps() {
         }
     }
 
+    #[test]
+    fn test_op_where_float() {
+        // Test basic where operation with float tensors
+        // condition: [true, false, true]
+        // x: [1.0, 2.0, 3.0]
+        // y: [4.0, 5.0, 6.0]
+        // expected: [1.0, 5.0, 3.0]
+        
+        let condition = create_ort_tensor(
+            vec![1u8, 0, 1], // true, false, true
+            vec![3],
+            DataType::Boolean,
+        );
+        
+        let x = create_ort_tensor(
+            vec![1.0f32, 2.0, 3.0].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![3],
+            DataType::Float,
+        );
+        
+        let y = create_ort_tensor(
+            vec![4.0f32, 5.0, 6.0].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![3],
+            DataType::Float,
+        );
 
+        let node = NodeProto::default();
+        let inputs = vec![condition, x, y];
+        let result = OrtEngine::op_where(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
 
+        let expected = ArrayD::from_shape_vec(IxDyn(&[3]), vec![1.0f32, 5.0, 3.0]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
 
+    #[test]
+    fn test_op_where_int32() {
+        // Test where operation with int32 tensors
+        let condition = create_ort_tensor(
+            vec![0u8, 1, 0], // false, true, false
+            vec![3],
+            DataType::Boolean,
+        );
+        
+        let x = create_ort_tensor(
+            vec![10i32, 20, 30].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![3],
+            DataType::Int32,
+        );
+        
+        let y = create_ort_tensor(
+            vec![40i32, 50, 60].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![3],
+            DataType::Int32,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![condition, x, y];
+        let result = OrtEngine::op_where(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected = ArrayD::from_shape_vec(IxDyn(&[3]), vec![40i32, 20, 60]).unwrap();
+        match result_array {
+            ArrayDResult::Int32(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected int32 array"),
+        }
+    }
+
+    // #[test]
+    // fn test_op_where_broadcasting() {
+    //     // Test where operation with broadcasting
+    //     // condition: [true, false] (shape: [2])
+    //     // x: [[1.0, 2.0], [3.0, 4.0]] (shape: [2, 2])
+    //     // y: [10.0] (shape: [1])
+    //     // expected: [[1.0, 2.0], [10.0, 10.0]]
+        
+    //     let condition = create_ort_tensor(
+    //         vec![1u8, 0], // true, false
+    //         vec![2],
+    //         DataType::Boolean,
+    //     );
+        
+    //     let x = create_ort_tensor(
+    //         vec![1.0f32, 2.0, 3.0, 4.0].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+    //         vec![2, 2],
+    //         DataType::Float,
+    //     );
+        
+    //     let y = create_ort_tensor(
+    //         vec![10.0f32].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+    //         vec![1],
+    //         DataType::Float,
+    //     );
+
+    //     let node = NodeProto::default();
+    //     let inputs = vec![condition, x, y];
+    //     let result = OrtEngine::op_where(&node, &inputs).unwrap();
+    //     let result_array = ort_to_ndarray(&result).unwrap();
+
+    //     let expected = ArrayD::from_shape_vec(IxDyn(&[2, 2]), vec![1.0f32, 2.0, 10.0, 10.0]).unwrap();
+    //     match result_array {
+    //         ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+    //         _ => panic!("Expected float array"),
+    //     }
+    // }
+
+    
 }

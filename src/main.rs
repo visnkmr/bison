@@ -73,14 +73,14 @@ pub struct TensorProto {
 
 #[derive(Debug, Clone, Default)]
 pub struct AttributeProto {
-    pub name: String,
-    pub i: i64,
-    pub f: f32,
-    pub s: Vec<u8>,
-    pub t: Option<TensorProto>,
-    pub ints: Vec<i64>,
-    pub floats: Vec<f32>,
-    pub g: Option<GraphProto>, // Added for subgraphs
+    pub name: String,        // Name of the attribute
+    pub i: i64,              // Integer value
+    pub f: f32,              // Float value
+    pub s: Vec<u8>,          // String/bytes value
+    pub t: Option<TensorProto>, // Tensor value
+    pub ints: Vec<i64>,      // List of integers
+    pub floats: Vec<f32>,    // List of floats
+    pub g: Option<GraphProto>, // Subgraph value (for control flow operators)
 }
 
 

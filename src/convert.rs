@@ -72,13 +72,13 @@ pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, Ort
                 array=a;
             }
             else{
-                return Err(OrtError::TypeMismatch(("")))
+                return Err(OrtError::TypeMismatch(("".to_string())))
             };
             if let ArrayDResult::Float(raisetowhat)=raiseto{
                 raisetoval=raisetowhat.first().unwrap().clone();
             }
             else{
-                return Err(OrtError::TypeMismatch(""))
+                return Err(OrtError::TypeMismatch("".to_string()))
             }
 
             if let ArrayDResult::Float(arrayinp)=array{
@@ -86,7 +86,7 @@ pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, Ort
                 return Ok(ArrayDResult::Float(result))
             }
             else{
-                return Err(OrtError::TypeMismatch(("")))
+                return Err(OrtError::TypeMismatch(("".to_string())))
             }
         }
         (ArrayDResult::Int64(_), ArrayDResult::Int64(_)) => {
@@ -103,13 +103,13 @@ pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, Ort
                 array=a;
             }
             else{
-                return Err(OrtError::TypeMismatch(("")))
+                return Err(OrtError::TypeMismatch(("").to_string()))
             };
             if let ArrayDResult::Int64(raisetowhat)=raiseto{
                 raisetoval=raisetowhat.first().unwrap().clone();
             }
             else{
-                return Err(OrtError::TypeMismatch(("")))
+                return Err(OrtError::TypeMismatch(("".to_string())))
             }
 
             if let ArrayDResult::Int64(arrayinp)=array{
@@ -117,7 +117,7 @@ pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, Ort
                 return Ok(ArrayDResult::Int64(result))
             }
             else{
-                return Err(OrtError::TypeMismatch(("")))
+                return Err(OrtError::TypeMismatch(("".to_string())))
             }
         }
         (ArrayDResult::Int32(_), ArrayDResult::Int32(_)) => {
@@ -134,13 +134,13 @@ pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, Ort
                 array=a;
             }
             else{
-                return Err(OrtError::TypeMismatch(("")))
+                return Err(OrtError::TypeMismatch(("".to_string())))
             };
             if let ArrayDResult::Int32(raisetowhat)=raiseto{
                 raisetoval=raisetowhat.first().unwrap().clone();
             }
             else{
-                return Err(OrtError::TypeMismatch(("")))
+                return Err(OrtError::TypeMismatch(("".to_string())))
             }
 
             if let ArrayDResult::Int32(arrayinp)=array{
@@ -148,7 +148,7 @@ pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, Ort
                 return Ok(ArrayDResult::Int32(result))
             }
             else{
-                return Err(OrtError::TypeMismatch(("")))
+                return Err(OrtError::TypeMismatch(("".to_string())))
             }
         }
         (a, b) => {
@@ -167,7 +167,7 @@ pub fn pow_array(a: &ArrayDResult, b: &ArrayDResult) -> Result<ArrayDResult, Ort
             let retstr=format!("{}{}",a_type.to_string(),
                 b_type.to_string());
                 println!("{}",retstr);
-            Err(OrtError::TypeMismatch(""))
+            Err(OrtError::TypeMismatch("".to_string()))
         }
     }
 }
@@ -188,7 +188,7 @@ pub fn sqrt_array(a: &ArrayDResult) -> Result<ArrayDResult, OrtError> {
         }
         
         _ => {
-            Err(OrtError::TypeMismatch(""))
+            Err(OrtError::TypeMismatch("".to_string()))
         }
     }
 }
@@ -698,10 +698,10 @@ pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
                         .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for boolean tensor".into()))
                     
                 }
-                _ => Err(OrtError::TypeMismatch("Unsupported tensor type, expected Float, Int64, or Int32")),
+                _ => Err(OrtError::TypeMismatch("Unsupported tensor type, expected Float, Int64, or Int32".to_string())),
             }
         }
-        _ => Err(OrtError::TypeMismatch("Expected tensor")),
+        _ => Err(OrtError::TypeMismatch("Expected tensor".to_string())),
     }
 }
 
@@ -712,7 +712,7 @@ mod tests {
 
     use std::collections::HashMap;
 
-    use crate::{AttributeProto, OrtEngine};
+    use crate::{AttributeProto, OrtEngine, TensorProto};
 
     use super::*; // Import the parent module's items (pow_array, ArrayDResult, OrtError)
     use ndarray::{ArrayD, IxDyn};
@@ -1302,7 +1302,564 @@ mod tests {
         ));
     }
     
+    #[test]
+    fn test_op_clip_float() {
+        let input_data = vec![-1.0f32, 0.0, 1.0, 5.0, 10.0];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![5],
+            DataType::Float,
+        );
+        // Create scalar tensors for min and max (shape should be [] not [1])
+        let min_data = vec![0.0f32];
+        let min = create_ort_tensor(
+            min_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![],  // Empty shape for scalar
+            DataType::Float,
+        );
+        let max_data = vec![3.0f32];
+        let max = create_ort_tensor(
+            max_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![],  // Empty shape for scalar
+            DataType::Float,
+        );
+
+        let node = NodeProto ::default();
+        let inputs = vec![input, min, max];
+        let result = OrtEngine::op_clip(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+        println!("{:?}",result_array);
+        let expected = ArrayD::from_shape_vec(IxDyn(&[5]), vec![0.0, 0.0, 1.0, 3.0, 3.0]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_clip_int32_no_min_max() {
+        let input_data = vec![-1i32, 0, 1, 5, 10];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![5],
+            DataType::Int32,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input];
+        let result = OrtEngine::op_clip(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected =
+            ArrayD::from_shape_vec(IxDyn(&[5]), vec![-1i32, 0, 1, 5, 10]).unwrap();
+        match result_array {
+            ArrayDResult::Int32(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected int32 array"),
+        }
+    }
+
+    // Test op_concat
+    #[test]
+    fn test_op_concat_float_axis_0() {
+        let input1_data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let input1 = create_ort_tensor(
+            input1_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 2],
+            DataType::Float,
+        );
+        let input2_data = vec![5.0f32, 6.0, 7.0, 8.0];
+        let input2 = create_ort_tensor(
+            input2_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 2],
+            DataType::Float,
+        );
+
+        let node = NodeProto {
+            attributes: vec![AttributeProto {name:"axis".to_string(),i:0,s:vec![],ints:vec![],t:None, f: 0.0, floats: vec![], g: None }],
+            input: vec![],
+            output: vec![],
+            op_type: "".to_string(),
+            name: "".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let inputs = vec![input1, input2];
+        let result = OrtEngine::op_concat(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected = ArrayD::from_shape_vec(
+            IxDyn(&[4, 2]),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        )
+        .unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_concat_negative_axis() {
+        let input1_data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let input1 = create_ort_tensor(
+            input1_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 2],
+            DataType::Float,
+        );
+        let input2_data = vec![5.0f32, 6.0, 7.0, 8.0];
+        let input2 = create_ort_tensor(
+            input2_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 2],
+            DataType::Float,
+        );
+
+        let node = NodeProto {
+            attributes: vec![AttributeProto {name:"axis".to_string(),i:-1,s:vec![],ints:vec![],t:None, f: 0.0, floats: vec![], g: None }],
+            input: vec![],
+            output: vec![],
+            op_type: "".to_string(),
+            name: "".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let inputs = vec![input1, input2];
+        let result = OrtEngine::op_concat(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected = ArrayD::from_shape_vec(
+            IxDyn(&[2, 4]),
+            vec![1.0, 3.0, 2.0, 4.0, 5.0, 7.0, 6.0, 8.0],
+        )
+        .unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    // Test op_constant_of_shape
+    #[test]
+    fn test_op_constant_of_shape_default() {
+        let shape_data = vec![2i64, 3];
+        let shape_tensor = create_ort_tensor(
+            shape_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2],
+            DataType::Int64,
+        );
+
+        let node = NodeProto {
+            attributes: vec![],
+            input: vec![],
+            output: vec![],
+            op_type: "".to_string(),
+            name: "".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let inputs = vec![shape_tensor];
+        let result = OrtEngine::op_constant_of_shape(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected =
+            ArrayD::from_shape_vec(IxDyn(&[2, 3]), vec![0.0f32; 6]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_constant_of_shape_with_value() {
+        let shape_data = vec![2i64, 2];
+        let shape_tensor = create_ort_tensor(
+            shape_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2],
+            DataType::Int64,
+        );
+        let mut value_tensor = TensorProto::default();
+        value_tensor.data_type = 1; // Float
+        value_tensor.dims = vec![1]; // Shape [1]
+        value_tensor.float_data = vec![5.0]; // Value 5.0
+        value_tensor.raw_data = vec![0, 0, 160, 64]; // 5.0f32 in little-endian bytes
     
+
+        let node = NodeProto {
+            attributes: vec![AttributeProto {name:"value".to_string(),i:0,s:vec![],ints:vec![],t:Some(value_tensor), f: 0.0, floats: vec![], g: None }],
+            input: vec![],
+            output: vec![],
+            op_type: "".to_string(),
+            name: "".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let inputs = vec![shape_tensor];
+        let result = OrtEngine::op_constant_of_shape(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected =
+            ArrayD::from_shape_vec(IxDyn(&[2, 2]), vec![5.0f32; 4]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    // Test op_conv
+    #[test]
+    fn test_op_conv_2d_valid_padding() {
+        let input_data = vec![
+            1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, // Batch 1
+            10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, // Batch 2
+        ];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 1, 3, 3], // Batch=2, Channels=1, Height=3, Width=3
+            DataType::Float,
+        );
+    
+        let weight_data = vec![1.0f32, 0.0, 0.0, 1.0];
+        let weight = create_ort_tensor(
+            weight_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![1, 1, 2, 2], // OutChannels=1, InChannels=1, Kernel=2x2
+            DataType::Float,
+        );
+    
+        let node = NodeProto {
+            attributes: vec![
+                AttributeProto {
+                    name: "auto_pad".to_string(),
+                    i: 0,
+                    s: "VALID".as_bytes().to_vec(),
+                    ints: vec![],
+                    t: None,
+                    f: 0.0,
+                    floats: vec![],
+                    g: None
+                },
+                AttributeProto {
+                    name: "strides".to_string(),
+                    i: 0,
+                    s: vec![],
+                    ints: vec![1, 1],
+                    t: None,
+                    f: 0.0,
+                    floats: vec![],
+                    g: None
+                },
+                AttributeProto {
+                    name: "dilations".to_string(),
+                    i: 0,
+                    s: vec![],
+                    ints: vec![1, 1],
+                    t: None,
+                    f: 0.0,
+                    floats: vec![],
+                    g: None
+                },
+            ],
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Conv".to_string(),
+            name: "conv_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let inputs = vec![input, weight];
+        let result = OrtEngine::op_conv(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+    
+        // Expected output shape: [2, 1, 2, 2] (VALID padding, stride=1)
+        // For input [[1,2,3],[4,5,6],[7,8,9]], kernel [[1,0],[0,1]]:
+        // output[0,0,0,0] = 1*1 + 2*0 + 4*0 + 5*1 = 6
+        // output[0,0,0,1] = 2*1 + 3*0 + 5*0 + 6*1 = 8
+        // output[0,0,1,0] = 4*1 + 5*0 + 7*0 + 8*1 = 12
+        // output[0,0,1,1] = 5*1 + 6*0 + 8*0 + 9*1 = 14
+        let expected = ArrayD::from_shape_vec(
+            IxDyn(&[2, 1, 2, 2]),
+            vec![6.0, 8.0, 12.0, 14.0, 24.0, 26.0, 30.0, 32.0],
+        )
+        .unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+    
+    // Mock helper functions for testing
+    fn create_ort_tensor(
+        data: Vec<u8>,
+        shape: Vec<usize>,
+        dtype: DataType,
+    ) -> OrtValue {
+        OrtValue::Tensor {
+            shape: shape.into_iter().map(|d| Dimensions::Fixed(d)).collect(),
+            dtype,
+            data: Arc::new(data),
+        }
+    }
+    #[test]
+    fn test_op_conv_2d_same_padding() {
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![1, 1, 3, 3],
+            DataType::Float,
+        );
+
+        let weight_data = vec![1.0f32, 0.0, 0.0, 1.0];
+        let weight = create_ort_tensor(
+            weight_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![1, 1, 2, 2],
+            DataType::Float,
+        );
+
+        let node = NodeProto {
+            attributes: vec![
+                AttributeProto {name:"auto_pad".to_string(),i:0,s:"SAME_UPPER".as_bytes().to_vec(),ints:vec![],t:None, f: 0.0, floats: vec![], g: None },
+                AttributeProto {name:"strides".to_string(),i:0,s:vec![],ints:vec![1,1],t:None, f: 0.0, floats: vec![], g: None },
+                AttributeProto {name:"dilations".to_string(),i:0,s:vec![],ints:vec![1,1],t:None, f: 0.0, floats: vec![], g: None },
+            ],
+            input: vec!["input".to_string()],
+            output: vec!["output".to_string()],
+            op_type: "Conv".to_string(),
+            name: "conv_node".to_string(),
+            domain: "".to_string(),
+            subgraphs: HashMap::new(),
+        };
+        let inputs = vec![input, weight];
+        let result = OrtEngine::op_conv(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected output shape: [1, 1, 3, 3] (SAME_UPPER padding)
+        let expected = ArrayD::from_shape_vec(
+            IxDyn(&[1, 1, 3, 3]),
+            vec![6.0, 8.0, 3.0, 12.0, 14.0, 6.0, 7.0, 8.0, 9.0],
+        )
+        .unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_floor() {
+        // Test with float tensor
+        let input_data = vec![1.7f32, -2.3, 3.0, -4.9, 5.5];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![5],
+            DataType::Float,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input];
+        let result = OrtEngine::op_floor(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected = ArrayD::from_shape_vec(IxDyn(&[5]), vec![1.0f32, -3.0, 3.0, -5.0, 5.0]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_floor_non_float_input() {
+        // Test with int32 tensor (should fail)
+        let input_data = vec![1i32, 2, 3, 4, 5];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![5],
+            DataType::Int32,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input];
+        let result = OrtEngine::op_floor(&node, &inputs);
+        
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(msg)) if msg == "Floor only supports float tensors"
+        ));
+    }
+
+    #[test]
+    fn test_op_floor_empty_input() {
+        // Test with empty input list
+        let node = NodeProto::default();
+        let inputs = vec![];
+        let result = OrtEngine::op_floor(&node, &inputs);
+        
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(msg)) if msg == "Floor requires one tensor"
+        ));
+    }
+
+    #[test]
+    fn test_op_floor_non_tensor_input() {
+        // Test with non-tensor input
+        let input = OrtValue::Sequence(vec![]);
+        let node = NodeProto::default();
+        let inputs = vec![input];
+        let result = OrtEngine::op_floor(&node, &inputs);
+        
+        assert!(matches!(
+            result,
+            Err(OrtError::TypeMismatch(msg)) if msg == "Input must be a tensor"
+        ));
+    }
+    
+#[test]
+fn test_op_round_float() {
+    // Test with float tensor
+    let input_data = vec![1.4f32, 1.5, 1.6, 2.5, 3.5, -1.5, -2.5];
+    let input = create_ort_tensor(
+        input_data
+            .iter()
+            .flat_map(|x| x.to_le_bytes().to_vec())
+            .collect(),
+        vec![7],
+        DataType::Float,
+    );
+
+    let node = NodeProto::default();
+    let inputs = vec![input];
+    let result = OrtEngine::op_round(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+
+    let expected = ArrayD::from_shape_vec(IxDyn(&[7]), vec![1.0f32, 2.0, 2.0, 2.0, 4.0, -2.0, -2.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_round_non_float_input() {
+    // Test with int32 tensor (should fail)
+    let input_data = vec![1i32, 2, 3, 4, 5];
+    let input = create_ort_tensor(
+        input_data
+            .iter()
+            .flat_map(|x| x.to_le_bytes().to_vec())
+            .collect(),
+        vec![5],
+        DataType::Int32,
+    );
+
+    let node = NodeProto::default();
+    let inputs = vec![input];
+    let result = OrtEngine::op_round(&node, &inputs);
+    
+    assert!(matches!(
+        result,
+        Err(OrtError::TypeMismatch(msg)) if msg == "Round only supports float tensors"
+    ));
+}
+
+#[test]
+fn test_op_round_empty_input() {
+    // Test with empty input list
+    let node = NodeProto::default();
+    let inputs = vec![];
+    let result = OrtEngine::op_round(&node, &inputs);
+    
+    assert!(matches!(
+        result,
+        Err(OrtError::TypeMismatch(msg)) if msg == "Round requires one tensor"
+    ));
+}
+
+#[test]
+fn test_op_round_non_tensor_input() {
+    // Test with non-tensor input
+    let input = OrtValue::Sequence(vec![]);
+    let node = NodeProto::default();
+    let inputs = vec![input];
+    let result = OrtEngine::op_round(&node, &inputs);
+    
+    assert!(matches!(
+        result,
+        Err(OrtError::TypeMismatch(msg)) if msg == "Input must be a tensor"
+    ));
+}
+
+#[test]
+fn test_op_round_special_values() {
+    // Test with NaN, infinity, and zero
+    let input_data = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -0.0];
+    let input = create_ort_tensor(
+        input_data
+            .iter()
+            .flat_map(|x| x.to_le_bytes().to_vec())
+            .collect(),
+        vec![5],
+        DataType::Float,
+    );
+
+    let node = NodeProto::default();
+    let inputs = vec![input];
+    let result = OrtEngine::op_round(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert!(arr[0].is_nan());
+            assert!(arr[1].is_infinite() && arr[1].is_sign_positive());
+            assert!(arr[2].is_infinite() && arr[2].is_sign_negative());
+            assert_eq!(arr[3], 0.0);
+            assert_eq!(arr[4], -0.0);
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+    
+
+
 
 
 }

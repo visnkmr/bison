@@ -1058,6 +1058,801 @@ Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype))
         
     }
 
+    // Comparison Operations
+    pub fn op_less(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        // Get the input tensors
+        let input1 = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Less requires two tensors".to_string()))?;
+        let input2 = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Less requires two tensors".to_string()))?;
+
+        // Check that both inputs are numeric tensors
+        match (input1, input2) {
+            (OrtValue::Tensor { dtype: dtype1, .. }, OrtValue::Tensor { dtype: dtype2, .. }) => {
+                if !is_numeric_dtype(*dtype1) || !is_numeric_dtype(*dtype2) {
+                    return Err(OrtError::TypeMismatch("Less requires numeric tensors".to_string()));
+                }
+            },
+            _ => return Err(OrtError::TypeMismatch("Both inputs must be tensors".to_string())),
+        }
+
+        // Convert inputs to ndarrays
+        let array1 = ort_to_ndarray(input1)?;
+        let array2 = ort_to_ndarray(input2)?;
+
+        // Perform the less than comparison based on data types
+        match (array1, array2) {
+            (ArrayDResult::Float(arr1), ArrayDResult::Float(arr2)) => {
+                let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a < b);
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+            },
+            (ArrayDResult::Int32(arr1), ArrayDResult::Int32(arr2)) => {
+                let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a < b);
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+            },
+            (ArrayDResult::Int64(arr1), ArrayDResult::Int64(arr2)) => {
+                let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a < b);
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+            },
+            // Handle mixed types if needed
+            (ArrayDResult::Float(arr1), ArrayDResult::Int32(arr2)) => {
+                let arr2_float = arr2.mapv(|x| x as f32);
+                let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a < b);
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+            },
+            (ArrayDResult::Int32(arr1), ArrayDResult::Float(arr2)) => {
+                let arr1_float = arr1.mapv(|x| x as f32);
+                let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a < b);
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+            },
+            (ArrayDResult::Float(arr1), ArrayDResult::Int64(arr2)) => {
+                let arr2_float = arr2.mapv(|x| x as f32);
+                let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a < b);
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+            },
+            (ArrayDResult::Int64(arr1), ArrayDResult::Float(arr2)) => {
+                let arr1_float = arr1.mapv(|x| x as f32);
+                let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a < b);
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+            },
+            (ArrayDResult::Int32(arr1), ArrayDResult::Int64(arr2)) => {
+                let arr1_i64 = arr1.mapv(|x| x as i64);
+                let result = ndarray::Zip::from(&arr1_i64).and(&arr2).map_collect(|&a, &b| a < b);
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+            },
+            (ArrayDResult::Int64(arr1), ArrayDResult::Int32(arr2)) => {
+                let arr2_i64 = arr2.mapv(|x| x as i64);
+                let result = ndarray::Zip::from(&arr1).and(&arr2_i64).map_collect(|&a, &b| a < b);
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+            },
+            _ => Err(OrtError::TypeMismatch("Unsupported data types for Less operation".to_string())),
+        }
+        
+    }
+
+    pub fn op_greater(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensors
+let input1 = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Greater requires two tensors".to_string()))?;
+let input2 = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Greater requires two tensors".to_string()))?;
+
+// Check that both inputs are numeric tensors
+match (input1, input2) {
+    (OrtValue::Tensor { dtype: dtype1, .. }, OrtValue::Tensor { dtype: dtype2, .. }) => {
+        if !is_numeric_dtype(*dtype1) || !is_numeric_dtype(*dtype2) {
+            return Err(OrtError::TypeMismatch("Greater requires numeric tensors".to_string()));
+        }
+    },
+    _ => return Err(OrtError::TypeMismatch("Both inputs must be tensors".to_string())),
+}
+
+// Convert inputs to ndarrays
+let array1 = ort_to_ndarray(input1)?;
+let array2 = ort_to_ndarray(input2)?;
+
+// Perform the greater than comparison based on data types
+match (array1, array2) {
+    (ArrayDResult::Float(arr1), ArrayDResult::Float(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a > b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int32(arr1), ArrayDResult::Int32(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a > b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int64(arr1), ArrayDResult::Int64(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a > b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    // Handle mixed types if needed
+    (ArrayDResult::Float(arr1), ArrayDResult::Int32(arr2)) => {
+        let arr2_float = arr2.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a > b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int32(arr1), ArrayDResult::Float(arr2)) => {
+        let arr1_float = arr1.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a > b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Float(arr1), ArrayDResult::Int64(arr2)) => {
+        let arr2_float = arr2.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a > b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int64(arr1), ArrayDResult::Float(arr2)) => {
+        let arr1_float = arr1.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a > b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int32(arr1), ArrayDResult::Int64(arr2)) => {
+        let arr1_i64 = arr1.mapv(|x| x as i64);
+        let result = ndarray::Zip::from(&arr1_i64).and(&arr2).map_collect(|&a, &b| a > b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int64(arr1), ArrayDResult::Int32(arr2)) => {
+        let arr2_i64 = arr2.mapv(|x| x as i64);
+        let result = ndarray::Zip::from(&arr1).and(&arr2_i64).map_collect(|&a, &b| a > b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    _ => Err(OrtError::TypeMismatch("Unsupported data types for Greater operation".to_string())),
+}
+        
+    }
+
+    pub fn op_equal(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensors
+let input1 = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Equal requires two tensors".to_string()))?;
+let input2 = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Equal requires two tensors".to_string()))?;
+
+// Convert inputs to ndarrays
+let array1 = ort_to_ndarray(input1)?;
+let array2 = ort_to_ndarray(input2)?;
+
+// Perform the equality comparison based on data types
+match (array1, array2) {
+    (ArrayDResult::Float(arr1), ArrayDResult::Float(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int32(arr1), ArrayDResult::Int32(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int64(arr1), ArrayDResult::Int64(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Boolean(arr1), ArrayDResult::Boolean(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    // Handle mixed types
+    (ArrayDResult::Float(arr1), ArrayDResult::Int32(arr2)) => {
+        let arr2_float = arr2.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int32(arr1), ArrayDResult::Float(arr2)) => {
+        let arr1_float = arr1.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Float(arr1), ArrayDResult::Int64(arr2)) => {
+        let arr2_float = arr2.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int64(arr1), ArrayDResult::Float(arr2)) => {
+        let arr1_float = arr1.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int32(arr1), ArrayDResult::Int64(arr2)) => {
+        let arr1_i64 = arr1.mapv(|x| x as i64);
+        let result = ndarray::Zip::from(&arr1_i64).and(&arr2).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int64(arr1), ArrayDResult::Int32(arr2)) => {
+        let arr2_i64 = arr2.mapv(|x| x as i64);
+        let result = ndarray::Zip::from(&arr1).and(&arr2_i64).map_collect(|&a, &b| a == b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    _ => Err(OrtError::TypeMismatch("Unsupported data types for Equal operation".to_string())),
+}
+        
+    }
+
+    pub fn op_greater_or_equal(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensors
+let input1 = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("GreaterOrEqual requires two tensors".to_string()))?;
+let input2 = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("GreaterOrEqual requires two tensors".to_string()))?;
+
+// Check that both inputs are numeric tensors
+match (input1, input2) {
+    (OrtValue::Tensor { dtype: dtype1, .. }, OrtValue::Tensor { dtype: dtype2, .. }) => {
+        if !is_numeric_dtype(*dtype1) || !is_numeric_dtype(*dtype2) {
+            return Err(OrtError::TypeMismatch("GreaterOrEqual requires numeric tensors".to_string()));
+        }
+    },
+    _ => return Err(OrtError::TypeMismatch("Both inputs must be tensors".to_string())),
+}
+
+// Convert inputs to ndarrays
+let array1 = ort_to_ndarray(input1)?;
+let array2 = ort_to_ndarray(input2)?;
+
+// Perform the greater than or equal comparison based on data types
+match (array1, array2) {
+    (ArrayDResult::Float(arr1), ArrayDResult::Float(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a >= b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int32(arr1), ArrayDResult::Int32(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a >= b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int64(arr1), ArrayDResult::Int64(arr2)) => {
+        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a >= b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    // Handle mixed types if needed
+    (ArrayDResult::Float(arr1), ArrayDResult::Int32(arr2)) => {
+        let arr2_float = arr2.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a >= b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int32(arr1), ArrayDResult::Float(arr2)) => {
+        let arr1_float = arr1.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a >= b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Float(arr1), ArrayDResult::Int64(arr2)) => {
+        let arr2_float = arr2.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a >= b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int64(arr1), ArrayDResult::Float(arr2)) => {
+        let arr1_float = arr1.mapv(|x| x as f32);
+        let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a >= b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int32(arr1), ArrayDResult::Int64(arr2)) => {
+        let arr1_i64 = arr1.mapv(|x| x as i64);
+        let result = ndarray::Zip::from(&arr1_i64).and(&arr2).map_collect(|&a, &b| a >= b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    (ArrayDResult::Int64(arr1), ArrayDResult::Int32(arr2)) => {
+        let arr2_i64 = arr2.mapv(|x| x as i64);
+        let result = ndarray::Zip::from(&arr1).and(&arr2_i64).map_collect(|&a, &b| a >= b);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+    },
+    _ => Err(OrtError::TypeMismatch("Unsupported data types for GreaterOrEqual operation".to_string())),
+}
+        
+    }
+ // Shape Manipulation Operations
+ pub fn op_reshape(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensor and shape tensor
+let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Reshape requires data tensor".to_string()))?;
+let shape_tensor = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Reshape requires shape tensor".to_string()))?;
+
+// Check that shape is an int64 tensor
+match shape_tensor {
+    OrtValue::Tensor { dtype, .. } if *dtype != DataType::Int64 => {
+        return Err(OrtError::TypeMismatch("Shape tensor must be int64".to_string()));
+    },
+    OrtValue::Tensor { .. } => {},
+    _ => return Err(OrtError::TypeMismatch("Shape input must be a tensor".to_string())),
+}
+
+// Get the allowzero attribute (default is 0)
+let allowzero = _node.attributes.iter()
+    .find(|a| a.name == "allowzero")
+    .map(|a| a.i == 1)
+    .unwrap_or(false);
+
+// Extract the data type and shape of the input tensor
+let (input_dtype, input_shape) = match data {
+    OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
+    _ => return Err(OrtError::TypeMismatch("Input must be a tensor".to_string())),
+};
+
+// Convert shape tensor to ndarray and extract the new shape
+let shape_array = match ort_to_ndarray(shape_tensor)? {
+    ArrayDResult::Int64(arr) => arr,
+    _ => return Err(OrtError::TypeMismatch("Shape tensor must contain int64 values".to_string())),
+};
+
+// Convert shape array to Vec<i64>
+let new_shape_vec: Vec<i64> = shape_array.iter().cloned().collect();
+
+// Calculate the total number of elements in the input tensor
+let input_size: i64 = input_shape.iter()
+    .map(|dim| match dim {
+        Dimensions::Fixed(size) => Ok(*size as i64),
+        Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Reshape".into())),
+    })
+    .collect::<OrtResult<Vec<i64>>>()?
+    .iter()
+    .product();
+
+// Process the new shape
+let mut output_shape: Vec<usize> = Vec::with_capacity(new_shape_vec.len());
+let mut negative_one_index: Option<usize> = None;
+let mut output_size: i64 = 1;
+
+for (i, &dim) in new_shape_vec.iter().enumerate() {
+    if dim == -1 {
+        if negative_one_index.is_some() {
+            return Err(OrtError::InvalidTensorData("Only one dimension can be -1 in Reshape".into()));
+        }
+        negative_one_index = Some(i);
+        output_shape.push(0); // Placeholder, will be calculated later
+    } else if dim == 0 {
+        if allowzero {
+            output_shape.push(0);
+            // If allowzero is true, we use 0 as the actual dimension
+            output_size *= 0;
+        } else {
+            // If allowzero is false, we copy the dimension from the input
+            let input_dim = match input_shape.get(i) {
+                Some(Dimensions::Fixed(size)) => *size,
+                _ => return Err(OrtError::InvalidTensorData(
+                    format!("Cannot copy dimension {} from input shape", i).into()
+                )),
+            };
+            output_shape.push(input_dim);
+            output_size *= input_dim as i64;
+        }
+    } else if dim < 0 {
+        return Err(OrtError::InvalidTensorData(
+            format!("Invalid dimension value {} in new shape", dim).into()
+        ));
+    } else {
+        output_shape.push(dim as usize);
+        output_size *= dim;
+    }
+}
+
+// If we have a -1 dimension, calculate its value
+if let Some(idx) = negative_one_index {
+    if output_size == 0 && allowzero {
+        // If allowzero is true and we have zeros in the shape, we can't determine the -1 dimension
+        if new_shape_vec.iter().any(|&dim| dim == 0) {
+            return Err(OrtError::InvalidTensorData(
+                "Cannot have both -1 and 0 in shape when allowzero=1".into()
+            ));
+        }
+    }
+    
+    // Calculate the size of the -1 dimension
+    let inferred_dim = if output_size == 0 {
+        0 // If other dimensions are zero, this must be zero too
+    } else {
+        input_size / output_size
+    };
+    
+    if input_size % output_size != 0 {
+        return Err(OrtError::InvalidTensorData(
+            format!("Cannot reshape tensor of size {} into shape {:?}", input_size, new_shape_vec).into()
+        ));
+    }
+    
+    output_shape[idx] = inferred_dim as usize;
+}
+
+// Verify that the total number of elements matches
+let final_output_size: i64 = output_shape.iter().map(|&d| d as i64).product();
+if final_output_size != input_size && !(final_output_size == 0 && input_size == 0) {
+    return Err(OrtError::InvalidTensorData(
+        format!("Cannot reshape tensor of size {} into shape with size {}", 
+                input_size, final_output_size).into()
+    ));
+}
+
+// Convert output_shape to Dimensions format
+let output_dims: Vec<Dimensions> = output_shape.clone().into_iter()
+    .map(|d| Dimensions::Fixed(d))
+    .collect();
+
+// Create the reshaped tensor
+let input_array = ort_to_ndarray(data)?;
+match input_array {
+    ArrayDResult::Float(arr) => {
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        Ok(ndarray_to_ort(ArrayDResult::Float(reshaped), input_dtype))
+    },
+    ArrayDResult::Int32(arr) => {
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        Ok(ndarray_to_ort(ArrayDResult::Int32(reshaped), input_dtype))
+    },
+    ArrayDResult::Int64(arr) => {
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        Ok(ndarray_to_ort(ArrayDResult::Int64(reshaped), input_dtype))
+    },
+    ArrayDResult::Boolean(arr) => {
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(reshaped), input_dtype))
+    },
+    // Add other data types as needed
+}
+    
+}
+pub fn op_squeeze(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensor
+let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Squeeze requires data tensor".to_string()))?;
+
+// Extract the data type and shape of the input tensor
+let (input_dtype, input_shape) = match data {
+    OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
+    _ => return Err(OrtError::TypeMismatch("Input must be a tensor".to_string())),
+};
+
+// Get axes from attribute or second input
+let axes = if inputs.len() > 1 {
+    // Get axes from the second input tensor
+    let axes_tensor = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Invalid axes tensor".to_string()))?;
+    
+    // Check that axes is an int64 tensor
+    match axes_tensor {
+        OrtValue::Tensor { dtype, .. } if *dtype != DataType::Int64 => {
+            return Err(OrtError::TypeMismatch("Axes tensor must be int64".to_string()));
+        },
+        OrtValue::Tensor { .. } => {},
+        _ => return Err(OrtError::TypeMismatch("Axes input must be a tensor".to_string())),
+    }
+    
+    // Convert axes tensor to ndarray and extract the axes
+    match ort_to_ndarray(axes_tensor)? {
+        ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
+        _ => return Err(OrtError::TypeMismatch("Axes tensor must contain int64 values".to_string())),
+    }
+} else {
+    // If no axes provided, find all dimensions with size 1
+    let rank = input_shape.len();
+    let mut all_axes = Vec::new();
+    
+    for (i, dim) in input_shape.iter().enumerate() {
+        if let Dimensions::Fixed(1) = dim {
+            all_axes.push(i as i64);
+        }
+    }
+    
+    all_axes
+};
+
+// Normalize negative axes
+let rank = input_shape.len() as i64;
+let normalized_axes: Vec<usize> = axes.iter()
+    .map(|&axis| {
+        let normalized = if axis < 0 { rank + axis } else { axis };
+        if normalized < 0 || normalized >= rank {
+            return Err(OrtError::InvalidTensorData(
+                format!("Axis {} is out of bounds for array of rank {}", axis, rank).into()
+            ));
+        }
+        Ok(normalized as usize)
+    })
+    .collect::<OrtResult<_>>()?;
+
+// Validate that all specified axes have dimension 1
+for &axis in &normalized_axes {
+    match input_shape.get(axis) {
+        Some(Dimensions::Fixed(1)) => {},
+        Some(_) => return Err(OrtError::InvalidTensorData(
+            format!("Cannot squeeze axis {} with dimension not equal to 1", axis).into()
+        )),
+        None => return Err(OrtError::InvalidTensorData(
+            format!("Axis {} is out of bounds for array of rank {}", axis, rank).into()
+        )),
+    }
+}
+
+// Create new shape by removing the squeezed dimensions
+let mut output_shape: Vec<Dimensions> = Vec::new();
+for (i, dim) in input_shape.iter().enumerate() {
+    if !normalized_axes.contains(&i) {
+        output_shape.push(dim.clone());
+    }
+}
+
+// Convert input to ndarray
+let input_array = ort_to_ndarray(data)?;
+
+// Reshape the array based on data type
+match input_array {
+    ArrayDResult::Float(arr) => {
+        // Get the shape as usize values
+        let output_shape_usize: Vec<usize> = output_shape.iter()
+            .map(|dim| match dim {
+                Dimensions::Fixed(size) => Ok(*size),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Squeeze".into())),
+            })
+            .collect::<OrtResult<_>>()?;
+        
+        // Reshape the array
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape_usize))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        
+        Ok(ndarray_to_ort(ArrayDResult::Float(reshaped), input_dtype))
+    },
+    ArrayDResult::Int32(arr) => {
+        let output_shape_usize: Vec<usize> = output_shape.iter()
+            .map(|dim| match dim {
+                Dimensions::Fixed(size) => Ok(*size),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Squeeze".into())),
+            })
+            .collect::<OrtResult<_>>()?;
+        
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape_usize))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        
+        Ok(ndarray_to_ort(ArrayDResult::Int32(reshaped), input_dtype))
+    },
+    ArrayDResult::Int64(arr) => {
+        let output_shape_usize: Vec<usize> = output_shape.iter()
+            .map(|dim| match dim {
+                Dimensions::Fixed(size) => Ok(*size),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Squeeze".into())),
+            })
+            .collect::<OrtResult<_>>()?;
+        
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape_usize))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        
+        Ok(ndarray_to_ort(ArrayDResult::Int64(reshaped), input_dtype))
+    },
+    ArrayDResult::Boolean(arr) => {
+        let output_shape_usize: Vec<usize> = output_shape.iter()
+            .map(|dim| match dim {
+                Dimensions::Fixed(size) => Ok(*size),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Squeeze".into())),
+            })
+            .collect::<OrtResult<_>>()?;
+        
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape_usize))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(reshaped), input_dtype))
+    },
+    // Add other data types as needed
+}
+    
+}
+
+pub fn op_unsqueeze(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensor
+let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Unsqueeze requires data tensor".to_string()))?;
+
+// Extract the data type and shape of the input tensor
+let (input_dtype, input_shape) = match data {
+    OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
+    _ => return Err(OrtError::TypeMismatch("Input must be a tensor".to_string())),
+};
+
+// Get axes from the second input tensor
+let axes_tensor = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Unsqueeze requires axes tensor".to_string()))?;
+
+// Check that axes is an int64 tensor
+match axes_tensor {
+    OrtValue::Tensor { dtype, .. } if *dtype != DataType::Int64 => {
+        return Err(OrtError::TypeMismatch("Axes tensor must be int64".to_string()));
+    },
+    OrtValue::Tensor { .. } => {},
+    _ => return Err(OrtError::TypeMismatch("Axes input must be a tensor".to_string())),
+}
+
+// Convert axes tensor to ndarray and extract the axes
+let axes = match ort_to_ndarray(axes_tensor)? {
+    ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
+    _ => return Err(OrtError::TypeMismatch("Axes tensor must contain int64 values".to_string())),
+};
+
+// Check for duplicate entries in axes
+let mut sorted_axes = axes.clone();
+sorted_axes.sort();
+for i in 1..sorted_axes.len() {
+    if sorted_axes[i] == sorted_axes[i-1] {
+        return Err(OrtError::InvalidTensorData(
+            format!("Duplicate value {} in axes", sorted_axes[i]).into()
+        ));
+    }
+}
+
+// Calculate output rank
+let input_rank = input_shape.len() as i64;
+let output_rank = input_rank + axes.len() as i64;
+
+// Normalize negative axes and validate
+let normalized_axes: Vec<usize> = axes.iter()
+    .map(|&axis| {
+        let normalized = if axis < 0 { output_rank + axis } else { axis };
+        if normalized < 0 || normalized >= output_rank {
+            return Err(OrtError::InvalidTensorData(
+                format!("Axis {} is out of bounds for output of rank {}", axis, output_rank).into()
+            ));
+        }
+        Ok(normalized as usize)
+    })
+    .collect::<OrtResult<_>>()?;
+
+// Create new shape by inserting dimensions of size 1
+let mut output_shape: Vec<Dimensions> = Vec::with_capacity(output_rank as usize);
+let mut input_idx = 0;
+
+for i in 0..output_rank as usize {
+    if normalized_axes.contains(&i) {
+        output_shape.push(Dimensions::Fixed(1));
+    } else {
+        if input_idx < input_shape.len() {
+            output_shape.push(input_shape[input_idx].clone());
+            input_idx += 1;
+        } else {
+            return Err(OrtError::InvalidTensorData("Invalid axes for unsqueeze".into()));
+        }
+    }
+}
+
+// Convert input to ndarray
+let input_array = ort_to_ndarray(data)?;
+
+// Reshape the array based on data type
+match input_array {
+    ArrayDResult::Float(arr) => {
+        // Get the shape as usize values
+        let output_shape_usize: Vec<usize> = output_shape.iter()
+            .map(|dim| match dim {
+                Dimensions::Fixed(size) => Ok(*size),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Unsqueeze".into())),
+            })
+            .collect::<OrtResult<_>>()?;
+        
+        // Reshape the array
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape_usize))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        
+        Ok(ndarray_to_ort(ArrayDResult::Float(reshaped), input_dtype))
+    },
+    ArrayDResult::Int32(arr) => {
+        let output_shape_usize: Vec<usize> = output_shape.iter()
+            .map(|dim| match dim {
+                Dimensions::Fixed(size) => Ok(*size),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Unsqueeze".into())),
+            })
+            .collect::<OrtResult<_>>()?;
+        
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape_usize))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        
+        Ok(ndarray_to_ort(ArrayDResult::Int32(reshaped), input_dtype))
+    },
+    ArrayDResult::Int64(arr) => {
+        let output_shape_usize: Vec<usize> = output_shape.iter()
+            .map(|dim| match dim {
+                Dimensions::Fixed(size) => Ok(*size),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Unsqueeze".into())),
+            })
+            .collect::<OrtResult<_>>()?;
+        
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape_usize))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        
+        Ok(ndarray_to_ort(ArrayDResult::Int64(reshaped), input_dtype))
+    },
+    ArrayDResult::Boolean(arr) => {
+        let output_shape_usize: Vec<usize> = output_shape.iter()
+            .map(|dim| match dim {
+                Dimensions::Fixed(size) => Ok(*size),
+                Dimensions::Symbolic(_) => return Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Unsqueeze".into())),
+            })
+            .collect::<OrtResult<_>>()?;
+        
+        let reshaped = arr.into_shape(ndarray::IxDyn(&output_shape_usize))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(reshaped), input_dtype))
+    },
+    // Add other data types as needed
+}
+    
+}
+
+pub fn op_transpose(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensor
+let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Transpose requires data tensor".to_string()))?;
+
+// Extract the data type and shape of the input tensor
+let (input_dtype, input_shape) = match data {
+    OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
+    _ => return Err(OrtError::TypeMismatch("Input must be a tensor".to_string())),
+};
+
+// Get the rank of the input tensor
+let rank = input_shape.len();
+
+// Get the perm attribute (if provided)
+let perm = node.attributes.iter()
+    .find(|a| a.name == "perm")
+    .map(|a| a.ints.clone())
+    .unwrap_or_else(|| {
+        // Default is to reverse the dimensions
+        (0..rank as i64).rev().collect()
+    });
+
+// Validate perm attribute
+if perm.len() != rank {
+    return Err(OrtError::InvalidTensorData(
+        format!("perm attribute length ({}) must match input rank ({})", perm.len(), rank).into()
+    ));
+}
+
+// Check for duplicate entries in perm
+let mut sorted_perm = perm.clone();
+sorted_perm.sort();
+for i in 1..sorted_perm.len() {
+    if sorted_perm[i] == sorted_perm[i-1] {
+        return Err(OrtError::InvalidTensorData(
+            format!("Duplicate value {} in perm attribute", sorted_perm[i]).into()
+        ));
+    }
+}
+
+// Normalize negative indices and validate
+let normalized_perm: Vec<usize> = perm.iter()
+    .map(|&axis| {
+        let normalized = if axis < 0 { rank as i64 + axis } else { axis };
+        if normalized < 0 || normalized >= rank as i64 {
+            return Err(OrtError::InvalidTensorData(
+                format!("Axis {} is out of bounds for array of rank {}", axis, rank).into()
+            ));
+        }
+        Ok(normalized as usize)
+    })
+    .collect::<OrtResult<_>>()?;
+
+// Create the output shape
+let output_shape: Vec<Dimensions> = normalized_perm.iter()
+    .map(|&idx| input_shape[idx].clone())
+    .collect();
+
+// Convert input to ndarray
+let input_array = ort_to_ndarray(data)?;
+
+// Perform the transpose based on data type
+match input_array {
+    ArrayDResult::Float(arr) => {
+        // Create the permutation array for ndarray
+        let perm_array: Vec<usize> = normalized_perm;
+        
+        // Perform the transpose
+        let transposed = arr.permuted_axes(perm_array);
+        
+        Ok(ndarray_to_ort(ArrayDResult::Float(transposed.into_owned()), input_dtype))
+    },
+    ArrayDResult::Int32(arr) => {
+        let perm_array: Vec<usize> = normalized_perm;
+        let transposed = arr.permuted_axes(perm_array);
+        Ok(ndarray_to_ort(ArrayDResult::Int32(transposed.into_owned()), input_dtype))
+    },
+    ArrayDResult::Int64(arr) => {
+        let perm_array: Vec<usize> = normalized_perm;
+        let transposed = arr.permuted_axes(perm_array);
+        Ok(ndarray_to_ort(ArrayDResult::Int64(transposed.into_owned()), input_dtype))
+    },
+    ArrayDResult::Boolean(arr) => {
+        let perm_array: Vec<usize> = normalized_perm;
+        let transposed = arr.permuted_axes(perm_array);
+        Ok(ndarray_to_ort(ArrayDResult::Boolean(transposed.into_owned()), input_dtype))
+    },
+    // Add other data types as needed
+}
+    
+}
+
+
+
     }
 
 // Helper function to check if a data type is numeric

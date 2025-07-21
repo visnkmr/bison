@@ -6419,304 +6419,238 @@ match (a_array, b_array, c_array) {
         
     }
     
+    
     pub fn op_slice(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-// Get the input tensors
-let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Slice requires data tensor".to_string()))?;
-let starts = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Slice requires starts tensor".to_string()))?;
-let ends = inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("Slice requires ends tensor".to_string()))?;
-let axes = inputs.get(3); // Optional
-let steps = inputs.get(4); // Optional
-
-// Extract the data type and shape of the input tensor
-let (input_dtype, input_shape) = match data {
-    OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
-    _ => return Err(OrtError::TypeMismatch("Input data must be a tensor".to_string())),
-};
-
-// Convert input_shape to Vec<usize>
-let input_shape_vec: Vec<usize> = input_shape.iter()
-    .map(|dim| match dim {
-        Dimensions::Fixed(size) => Ok(*size),
-        Dimensions::Symbolic(_) => Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Slice".into())),
-    })
-    .collect::<OrtResult<_>>()?;
-
-// Get the rank of the input tensor
-let rank = input_shape_vec.len();
-
-// Convert inputs to ndarrays
-let data_array = ort_to_ndarray(data)?;
-
-// Extract starts values
-let starts_array = match ort_to_ndarray(starts)? {
-    ArrayDResult::Int32(arr) => arr.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
-    ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
-    _ => return Err(OrtError::TypeMismatch("Starts tensor must be int32 or int64".to_string())),
-};
-
-// Extract ends values
-let ends_array = match ort_to_ndarray(ends)? {
-    ArrayDResult::Int32(arr) => arr.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
-    ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
-    _ => return Err(OrtError::TypeMismatch("Ends tensor must be int32 or int64".to_string())),
-};
-
-// Extract axes values if provided
-let axes_array = if let Some(axes_tensor) = axes {
-    match ort_to_ndarray(axes_tensor)? {
-        ArrayDResult::Int32(arr) => arr.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
-        ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
-        _ => return Err(OrtError::TypeMismatch("Axes tensor must be int32 or int64".to_string())),
-    }
-} else {
-    // Default is [0, ..., len(starts)-1]
-    (0..starts_array.len() as i64).collect::<Vec<i64>>()
-};
-
-// Extract steps values if provided
-let steps_array = if let Some(steps_tensor) = steps {
-    match ort_to_ndarray(steps_tensor)? {
-        ArrayDResult::Int32(arr) => arr.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
-        ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
-        _ => return Err(OrtError::TypeMismatch("Steps tensor must be int32 or int64".to_string())),
-    }
-} else {
-    // Default is [1, ..., 1] of length len(starts)
-    vec![1; starts_array.len()]
-};
-
-// Validate input dimensions
-if starts_array.len() != ends_array.len() {
-    return Err(OrtError::InvalidTensorData(
-        format!("Starts and ends must have the same length, got {} and {}", 
-                starts_array.len(), ends_array.len()).into()
-    ));
-}
-
-if axes_array.len() != starts_array.len() {
-    return Err(OrtError::InvalidTensorData(
-        format!("Axes and starts must have the same length, got {} and {}", 
-                axes_array.len(), starts_array.len()).into()
-    ));
-}
-
-if steps_array.len() != starts_array.len() {
-    return Err(OrtError::InvalidTensorData(
-        format!("Steps and starts must have the same length, got {} and {}", 
-                steps_array.len(), starts_array.len()).into()
-    ));
-}
-
-// Check for zero steps
-for &step in &steps_array {
-    if step == 0 {
-        return Err(OrtError::InvalidTensorData("Steps cannot be 0".into()));
-    }
-}
-
-// Normalize negative axes
-let normalized_axes: Vec<usize> = axes_array.iter()
-    .map(|&axis| {
-        let normalized = if axis < 0 { rank as i64 + axis } else { axis };
-        if normalized < 0 || normalized >= rank as i64 {
+        // Get the input tensors
+        let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Slice requires data tensor".to_string()))?;
+        let starts = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Slice requires starts tensor".to_string()))?;
+        let ends = inputs.get(2).ok_or_else(|| OrtError::TypeMismatch("Slice requires ends tensor".to_string()))?;
+        let axes = inputs.get(3); // Optional
+        let steps = inputs.get(4); // Optional
+    
+        // Extract the data type and shape of the input tensor
+        let (input_dtype, input_shape) = match data {
+            OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
+            _ => return Err(OrtError::TypeMismatch("Input data must be a tensor".to_string())),
+        };
+    
+        // Convert input_shape to Vec<usize>
+        let input_shape_vec: Vec<usize> = input_shape.iter()
+            .map(|dim| match dim {
+                Dimensions::Fixed(size) => Ok(*size),
+                Dimensions::Symbolic(_) => Err(OrtError::InvalidTensorData("Dynamic dimensions not supported in Slice".into())),
+            })
+            .collect::<OrtResult<_>>()?;
+    
+        // Get the rank of the input tensor
+        let rank = input_shape_vec.len();
+    
+        // Convert inputs to ndarrays
+        let data_array = ort_to_ndarray(data)?;
+    
+        // Extract starts values
+        let starts_array = match ort_to_ndarray(starts)? {
+            ArrayDResult::Int32(arr) => arr.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
+            ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
+            _ => return Err(OrtError::TypeMismatch("Starts tensor must be int32 or int64".to_string())),
+        };
+    
+        // Extract ends values
+        let ends_array = match ort_to_ndarray(ends)? {
+            ArrayDResult::Int32(arr) => arr.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
+            ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
+            _ => return Err(OrtError::TypeMismatch("Ends tensor must be int32 or int64".to_string())),
+        };
+    
+        // Extract axes values if provided
+        let axes_array = if let Some(axes_tensor) = axes {
+            match ort_to_ndarray(axes_tensor)? {
+                ArrayDResult::Int32(arr) => arr.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
+                ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
+                _ => return Err(OrtError::TypeMismatch("Axes tensor must be int32 or int64".to_string())),
+            }
+        } else {
+            // Default is [0, ..., len(starts)-1]
+            (0..starts_array.len() as i64).collect::<Vec<i64>>()
+        };
+    
+        // Extract steps values if provided
+        let steps_array = if let Some(steps_tensor) = steps {
+            match ort_to_ndarray(steps_tensor)? {
+                ArrayDResult::Int32(arr) => arr.iter().map(|&x| x as i64).collect::<Vec<i64>>(),
+                ArrayDResult::Int64(arr) => arr.iter().cloned().collect::<Vec<i64>>(),
+                _ => return Err(OrtError::TypeMismatch("Steps tensor must be int32 or int64".to_string())),
+            }
+        } else {
+            // Default is [1, ..., 1] of length len(starts)
+            vec![1; starts_array.len()]
+        };
+    
+        // Validate input dimensions
+        if starts_array.len() != ends_array.len() {
             return Err(OrtError::InvalidTensorData(
-                format!("Axis {} is out of bounds for array of rank {}", axis, rank).into()
+                format!("Starts and ends must have the same length, got {} and {}", 
+                        starts_array.len(), ends_array.len()).into()
             ));
         }
-        Ok(normalized as usize)
-    })
-    .collect::<OrtResult<_>>()?;
-
-// Check for repeated axes
-let mut axes_set = std::collections::HashSet::new();
-for &axis in &normalized_axes {
-    if !axes_set.insert(axis) {
-        return Err(OrtError::InvalidTensorData(format!("Repeated axis {} in slice operation", axis).into()));
-    }
-}
-
-// Calculate effective starts, ends, and steps
-let mut effective_starts = vec![0; rank];
-let mut effective_ends = input_shape_vec.clone();
-let mut effective_steps = vec![1; rank];
-
-for i in 0..starts_array.len() {
-    let axis = normalized_axes[i];
-    let dim_size = input_shape_vec[axis] as i64;
-    let step = steps_array[i];
     
-    // Adjust starts
-    let mut start = starts_array[i];
-    if start < 0 {
-        start += dim_size;
-    }
+        if axes_array.len() != starts_array.len() {
+            return Err(OrtError::InvalidTensorData(
+                format!("Axes and starts must have the same length, got {} and {}", 
+                        axes_array.len(), starts_array.len()).into()
+            ));
+        }
     
-    // Clamp starts based on step direction
-    if step > 0 {
-        start = start.max(0).min(dim_size);
-    } else {
-        start = start.max(-1).min(dim_size - 1);
-    }
-    effective_starts[axis] = start as usize;
+        if steps_array.len() != starts_array.len() {
+            return Err(OrtError::InvalidTensorData(
+                format!("Steps and starts must have the same length, got {} and {}", 
+                        steps_array.len(), starts_array.len()).into()
+            ));
+        }
     
-    // Adjust ends
-    let mut end = ends_array[i];
-    if end < 0 {
-        end += dim_size;
-    }
-    
-    // Clamp ends based on step direction
-    if step > 0 {
-        end = end.max(0).min(dim_size);
-    } else {
-        end = end.max(-1).min(dim_size);
-    }
-    effective_ends[axis] = end as usize;
-    
-    // Set steps
-    effective_steps[axis] = step as isize;
-}
-
-// Calculate output shape
-let mut output_shape = Vec::with_capacity(rank);
-for axis in 0..rank {
-    let start = effective_starts[axis] as isize;
-    let end = effective_ends[axis] as isize;
-    let step = effective_steps[axis];
-    
-    let size = if step > 0 {
-        (end - start + step - 1) / step
-    } else {
-        (start - end + (-step) - 1) / (-step)
-    };
-    
-    output_shape.push(size.max(0) as usize);
-}
-
-println!("{:?}--{:?}--{:?}--{:?}-----{:?}",starts_array,ends_array,steps_array,output_shape,axes_array);
-
-// Perform slice operation based on data type
-match data_array {
-    ArrayDResult::Float(arr) => {
-        let mut output = ArrayD::zeros(ndarray::IxDyn(&output_shape));
-    for i in 0..output_shape[0] {
-        let mut indices = Vec::new();
-        let start = effective_starts[1] as isize;
-        let end = effective_ends[1] as isize;
-        let step = effective_steps[1];
-        if step < 0 {
-            let mut idx = start;
-            while idx >= end && idx < arr.shape()[1] as isize {
-                indices.push(idx as usize);
-                idx += step;
-            }
-        } else {
-            let mut idx = start;
-            while idx < end && idx < arr.shape()[1] as isize {
-                indices.push(idx as usize);
-                idx += step;
+        // Check for zero steps
+        for &step in &steps_array {
+            if step == 0 {
+                return Err(OrtError::InvalidTensorData("Steps cannot be 0".into()));
             }
         }
-        for (j, &idx) in indices.iter().enumerate() {
-            output[[i, j]] = arr[[i, idx]];
-        }
-    }
-    let result=output;
-        Ok(ndarray_to_ort(ArrayDResult::Float(result), input_dtype))
-    },
-    ArrayDResult::Int32(arr) => {
-
-let mut output = ArrayD::zeros(ndarray::IxDyn(&output_shape));
-    for i in 0..output_shape[0] {
-        let mut indices = Vec::new();
-        let start = effective_starts[1] as isize;
-        let end = effective_ends[1] as isize;
-        let step = effective_steps[1];
-        if step < 0 {
-            let mut idx = start;
-            while idx >= end && idx < arr.shape()[1] as isize {
-                indices.push(idx as usize);
-                idx += step;
-            }
-        } else {
-            let mut idx = start;
-            while idx < end && idx < arr.shape()[1] as isize {
-                indices.push(idx as usize);
-                idx += step;
-            }
-        }
-        for (j, &idx) in indices.iter().enumerate() {
-            output[[i, j]] = arr[[i, idx]];
-        }
-    }
-    let result = output;
     
-    Ok(ndarray_to_ort(ArrayDResult::Int32(result), input_dtype))
-        
-    },
-    ArrayDResult::Int64(arr) => {
-        let mut output = ArrayD::zeros(ndarray::IxDyn(&output_shape));
-    for i in 0..output_shape[0] {
-        let mut indices = Vec::new();
-        let start = effective_starts[1] as isize;
-        let end = effective_ends[1] as isize;
-        let step = effective_steps[1];
-        if step < 0 {
-            let mut idx = start;
-            while idx >= end && idx < arr.shape()[1] as isize {
-                indices.push(idx as usize);
-                idx += step;
-            }
-        } else {
-            let mut idx = start;
-            while idx < end && idx < arr.shape()[1] as isize {
-                indices.push(idx as usize);
-                idx += step;
+        // Normalize negative axes
+        let normalized_axes: Vec<usize> = axes_array.iter()
+            .map(|&axis| {
+                let normalized = if axis < 0 { rank as i64 + axis } else { axis };
+                if normalized < 0 || normalized >= rank as i64 {
+                    return Err(OrtError::InvalidTensorData(
+                        format!("Axis {} is out of bounds for array of rank {}", axis, rank).into()
+                    ));
+                }
+                Ok(normalized as usize)
+            })
+            .collect::<OrtResult<_>>()?;
+    
+        // Check for repeated axes
+        let mut axes_set = std::collections::HashSet::new();
+        for &axis in &normalized_axes {
+            if !axes_set.insert(axis) {
+                return Err(OrtError::InvalidTensorData(format!("Repeated axis {} in slice operation", axis).into()));
             }
         }
-        for (j, &idx) in indices.iter().enumerate() {
-            output[[i, j]] = arr[[i, idx]];
+    
+        // Calculate effective starts, ends, and steps
+        let mut effective_starts = vec![0; rank];
+        let mut effective_ends = input_shape_vec.clone();
+        let mut effective_steps = vec![1; rank];
+    
+        for i in 0..starts_array.len() {
+            let axis = normalized_axes[i];
+            let dim_size = input_shape_vec[axis] as i64;
+            let step = steps_array[i];
+            
+            // Adjust starts
+            let mut start = starts_array[i];
+            if start < 0 {
+                start += dim_size;
+            }
+            
+            // Clamp starts based on step direction
+            if step > 0 {
+                start = start.max(0).min(dim_size);
+            } else {
+                start = start.max(-1).min(dim_size - 1);
+            }
+            effective_starts[axis] = start as usize;
+            
+            // Adjust ends
+            let mut end = ends_array[i];
+            if end < 0 {
+                end += dim_size;
+            }
+            
+            // Clamp ends based on step direction
+            if step > 0 {
+                end = end.max(0).min(dim_size);
+            } else {
+                end = end.max(-1).min(dim_size);
+            }
+            effective_ends[axis] = end as usize;
+            
+            // Set steps
+            effective_steps[axis] = step as isize;
+        }
+    
+        // Calculate output shape
+        let mut output_shape = Vec::with_capacity(rank);
+        for axis in 0..rank {
+            let start = effective_starts[axis] as i64;
+            let end = effective_ends[axis] as i64;
+            let step = effective_steps[axis] as i64;
+            
+            let size = if step > 0 {
+                ((end - start + step - 1) / step).max(0)
+            } else {
+                ((start - end + (-step) - 1) / (-step)).max(0)
+            };
+            
+            output_shape.push(size as usize);
+        }
+        println!("{:?}--{:?}--{:?}--{:?}-----{:?}",starts_array,ends_array,steps_array,output_shape,axes_array);
+        // Perform slice operation based on data type
+        match data_array {
+            ArrayDResult::Float(arr) => {
+                let mut output = ArrayD::zeros(ndarray::IxDyn(&output_shape));
+                let mut indices = vec![0; rank];
+                for idx in ndarray::indices(ndarray::IxDyn(&output_shape)) {
+                    for axis in 0..rank {
+                        let axis_idx = effective_starts[axis] as i64 + idx[axis] as i64 * effective_steps[axis] as i64;
+                        indices[axis] = axis_idx as usize;
+                    }
+                    output[idx.slice()] = arr[indices.as_slice()];
+                }
+                let result = output;
+                Ok(ndarray_to_ort(ArrayDResult::Float(result), input_dtype))
+            },
+            ArrayDResult::Int32(arr) => {
+                let mut output = ArrayD::zeros(ndarray::IxDyn(&output_shape));
+                let mut indices = vec![0; rank];
+                for idx in ndarray::indices(ndarray::IxDyn(&output_shape)) {
+                    for axis in 0..rank {
+                        let axis_idx = effective_starts[axis] as i64 + idx[axis] as i64 * effective_steps[axis] as i64;
+                        indices[axis] = axis_idx as usize;
+                    }
+                    output[idx.slice()] = arr[indices.as_slice()];
+                }
+                let result = output;
+                Ok(ndarray_to_ort(ArrayDResult::Int32(result), input_dtype))
+            },
+            ArrayDResult::Int64(arr) => {
+                let mut output = ArrayD::zeros(ndarray::IxDyn(&output_shape));
+                let mut indices = vec![0; rank];
+                for idx in ndarray::indices(ndarray::IxDyn(&output_shape)) {
+                    for axis in 0..rank {
+                        let axis_idx = effective_starts[axis] as i64 + idx[axis] as i64 * effective_steps[axis] as i64;
+                        indices[axis] = axis_idx as usize;
+                    }
+                    output[idx.slice()] = arr[indices.as_slice()];
+                }
+                let result = output;
+                Ok(ndarray_to_ort(ArrayDResult::Int64(result), input_dtype))
+            },
+            ArrayDResult::Boolean(arr) => {
+                let mut output = ArrayD::from_elem(ndarray::IxDyn(&output_shape), false);
+                let mut indices = vec![0; rank];
+                for idx in ndarray::indices(ndarray::IxDyn(&output_shape)) {
+                    for axis in 0..rank {
+                        let axis_idx = effective_starts[axis] as i64 + idx[axis] as i64 * effective_steps[axis] as i64;
+                        indices[axis] = axis_idx as usize;
+                    }
+                    output[idx.slice()] = arr[indices.as_slice()];
+                }
+                let result = output;
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(result), input_dtype))
+            },
+            _ => Err(OrtError::TypeMismatch(format!("Unsupported data type for Slice operation: {:?}", input_dtype))),
         }
     }
-    let result = output;
-    
-    Ok(ndarray_to_ort(ArrayDResult::Int64(result), input_dtype))
-    },
-    ArrayDResult::Boolean(arr) => {
-let mut output=ArrayD::from_elem(ndarray::IxDyn(&output_shape), false);
-    for i in 0..output_shape[0] {
-        let mut indices = Vec::new();
-        let start = effective_starts[1] as isize;
-        let end = effective_ends[1] as isize;
-        let step = effective_steps[1];
-        if step < 0 {
-            let mut idx = start;
-            while idx >= end && idx < arr.shape()[1] as isize {
-                indices.push(idx as usize);
-                idx += step;
-            }
-        } else {
-            let mut idx = start;
-            while idx < end && idx < arr.shape()[1] as isize {
-                indices.push(idx as usize);
-                idx += step;
-            }
-        }
-        for (j, &idx) in indices.iter().enumerate() {
-            output[[i, j]] = arr[[i, idx]];
-        }
-    }
-    let result = output;
-    
-    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), input_dtype))
-        
-    },
-    _ => Err(OrtError::TypeMismatch(format!("Unsupported data type for Slice operation: {:?}", input_dtype))),
-}
-        
-    }
-    
-
     }
 
 // Helper function to check if a data type is numeric

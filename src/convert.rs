@@ -1387,7 +1387,7 @@ mod tests {
         );
 
         let node = NodeProto {
-            attributes: vec![AttributeProto {name:"axis".to_string(),i:0,s:vec![],ints:vec![],t:None, f: 0.0, floats: vec![], g: None }],
+            attributes: vec![AttributeProto {name:"axis".to_string(),i:0,s:vec![],ints:vec![],t:None, f: 0.0, floats: vec![], g: None,strings:vec![] }],
             input: vec![],
             output: vec![],
             op_type: "".to_string(),
@@ -1432,7 +1432,7 @@ mod tests {
         );
 
         let node = NodeProto {
-            attributes: vec![AttributeProto {name:"axis".to_string(),i:-1,s:vec![],ints:vec![],t:None, f: 0.0, floats: vec![], g: None }],
+            attributes: vec![AttributeProto {name:"axis".to_string(),i:-1,s:vec![],ints:vec![],t:None, f: 0.0, floats: vec![], g: None,strings:vec![] }],
             input: vec![],
             output: vec![],
             op_type: "".to_string(),
@@ -1508,7 +1508,7 @@ mod tests {
     
 
         let node = NodeProto {
-            attributes: vec![AttributeProto {name:"value".to_string(),i:0,s:vec![],ints:vec![],t:Some(value_tensor), f: 0.0, floats: vec![], g: None }],
+            attributes: vec![AttributeProto {name:"value".to_string(),i:0,s:vec![],ints:vec![],t:Some(value_tensor), f: 0.0, floats: vec![], g: None,strings:vec![] }],
             input: vec![],
             output: vec![],
             op_type: "".to_string(),
@@ -1564,7 +1564,8 @@ mod tests {
                     t: None,
                     f: 0.0,
                     floats: vec![],
-                    g: None
+                    g: None,
+                    strings:vec![]
                 },
                 AttributeProto {
                     name: "strides".to_string(),
@@ -1574,7 +1575,8 @@ mod tests {
                     t: None,
                     f: 0.0,
                     floats: vec![],
-                    g: None
+                    g: None,
+                    strings:vec![]
                 },
                 AttributeProto {
                     name: "dilations".to_string(),
@@ -1584,7 +1586,8 @@ mod tests {
                     t: None,
                     f: 0.0,
                     floats: vec![],
-                    g: None
+                    g: None,
+                    strings:vec![]
                 },
             ],
             input: vec!["input".to_string()],
@@ -1651,9 +1654,9 @@ mod tests {
 
         let node = NodeProto {
             attributes: vec![
-                AttributeProto {name:"auto_pad".to_string(),i:0,s:"SAME_UPPER".as_bytes().to_vec(),ints:vec![],t:None, f: 0.0, floats: vec![], g: None },
-                AttributeProto {name:"strides".to_string(),i:0,s:vec![],ints:vec![1,1],t:None, f: 0.0, floats: vec![], g: None },
-                AttributeProto {name:"dilations".to_string(),i:0,s:vec![],ints:vec![1,1],t:None, f: 0.0, floats: vec![], g: None },
+                AttributeProto {name:"auto_pad".to_string(),i:0,s:"SAME_UPPER".as_bytes().to_vec(),ints:vec![],t:None, f: 0.0, floats: vec![], g: None, strings:vec![] },
+                AttributeProto {name:"strides".to_string(),i:0,s:vec![],ints:vec![1,1],t:None, f: 0.0, floats: vec![], g: None, strings:vec![] },
+                AttributeProto {name:"dilations".to_string(),i:0,s:vec![],ints:vec![1,1],t:None, f: 0.0, floats: vec![], g: None, strings:vec![] },
             ],
             input: vec!["input".to_string()],
             output: vec!["output".to_string()],

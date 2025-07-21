@@ -81,6 +81,7 @@ pub struct AttributeProto {
     pub ints: Vec<i64>,      // List of integers
     pub floats: Vec<f32>,    // List of floats
     pub g: Option<GraphProto>, // Subgraph value (for control flow operators)
+    pub strings: Vec<Vec<u8>>
 }
 
 
@@ -545,6 +546,10 @@ impl Message for AttributeProto {
             }
             4 => {
                 prost::encoding::bytes::merge(wire_type, &mut self.s, buf, ctx)?;
+                //nowcommented  println!("AttributeProto: Set bytes: {:?}", String::from_utf8_lossy(&self.s));
+            } 
+            9 => {
+                prost::encoding::bytes::merge_repeated(wire_type, &mut self.strings, buf, ctx)?;
                 //nowcommented  println!("AttributeProto: Set bytes: {:?}", String::from_utf8_lossy(&self.s));
             }
             5 => {

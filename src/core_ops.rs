@@ -1,6 +1,8 @@
 // core_ops.rs - Implementation of core operations
 // This file contains implementations of functions declared in main.rs
 
+use std::result;
+
 use crate::{convert::{ndarray_to_ort, ort_to_ndarray, pow_array, sqrt_array, ArrayDResult}, *};
 
 // Implementations of functions will go here
@@ -6541,6 +6543,7 @@ let mut effective_steps = vec![1; rank];
 for i in 0..starts_array.len() {
     let axis = normalized_axes[i];
     let dim_size = input_shape_vec[axis] as i64;
+    let step = steps_array[i];
     
     // Adjust starts
     let mut start = starts_array[i];
@@ -6549,10 +6552,10 @@ for i in 0..starts_array.len() {
     }
     
     // Clamp starts based on step direction
-    if steps_array[i] > 0 {
+    if step > 0 {
         start = start.max(0).min(dim_size);
     } else {
-        start = start.max(0).min(dim_size - 1);
+        start = start.max(-1).min(dim_size - 1);
     }
     effective_starts[axis] = start as usize;
     
@@ -6563,15 +6566,15 @@ for i in 0..starts_array.len() {
     }
     
     // Clamp ends based on step direction
-    if steps_array[i] > 0 {
+    if step > 0 {
         end = end.max(0).min(dim_size);
     } else {
-        end = end.max(-1).min(dim_size - 1);
+        end = end.max(-1).min(dim_size);
     }
     effective_ends[axis] = end as usize;
     
     // Set steps
-    effective_steps[axis] = steps_array[i] as isize;
+    effective_steps[axis] = step as isize;
 }
 
 // Calculate output shape
@@ -6584,126 +6587,129 @@ for axis in 0..rank {
     let size = if step > 0 {
         (end - start + step - 1) / step
     } else {
-        (start - end - step - 1) / (-step)
+        (start - end + (-step) - 1) / (-step)
     };
     
     output_shape.push(size.max(0) as usize);
 }
 
+println!("{:?}--{:?}--{:?}--{:?}-----{:?}",starts_array,ends_array,steps_array,output_shape,axes_array);
+
 // Perform slice operation based on data type
 match data_array {
     ArrayDResult::Float(arr) => {
-        // Create ndarray slice specification
-        let mut slice_info = Vec::with_capacity(rank);
-        for axis in 0..rank {
-            let start = effective_starts[axis] as isize;
-            let end = effective_ends[axis] as isize;
-            let step = effective_steps[axis];
-            
-            if step > 0 {
-                slice_info.push(ndarray::SliceInfoElem::Slice {
-                    start,
-                    end: Some(end),
-                    step,
-                });
-            } else {
-                // For negative steps, we need to handle it differently
-                slice_info.push(ndarray::SliceInfoElem::Slice {
-                    start,
-                    end: if end == -1 { None } else { Some(end) },
-                    step,
-                });
+        let mut output = ArrayD::zeros(ndarray::IxDyn(&output_shape));
+    for i in 0..output_shape[0] {
+        let mut indices = Vec::new();
+        let start = effective_starts[1] as isize;
+        let end = effective_ends[1] as isize;
+        let step = effective_steps[1];
+        if step < 0 {
+            let mut idx = start;
+            while idx >= end && idx < arr.shape()[1] as isize {
+                indices.push(idx as usize);
+                idx += step;
+            }
+        } else {
+            let mut idx = start;
+            while idx < end && idx < arr.shape()[1] as isize {
+                indices.push(idx as usize);
+                idx += step;
             }
         }
-        
-        // Apply the slice
-        let sliced = arr.slice(&slice_info[..]);
-        
-        // Convert to owned array
-        let result = sliced.to_owned();
-        
+        for (j, &idx) in indices.iter().enumerate() {
+            output[[i, j]] = arr[[i, idx]];
+        }
+    }
+    let result=output;
         Ok(ndarray_to_ort(ArrayDResult::Float(result), input_dtype))
     },
     ArrayDResult::Int32(arr) => {
-        let mut slice_info = Vec::with_capacity(rank);
-        for axis in 0..rank {
-            let start = effective_starts[axis] as isize;
-            let end = effective_ends[axis] as isize;
-            let step = effective_steps[axis];
-            
-            if step > 0 {
-                slice_info.push(ndarray::SliceInfoElem::Slice {
-                    start,
-                    end: Some(end),
-                    step,
-                });
-            } else {
-                slice_info.push(ndarray::SliceInfoElem::Slice {
-                    start,
-                    end: if end == -1 { None } else { Some(end) },
-                    step,
-                });
+
+let mut output = ArrayD::zeros(ndarray::IxDyn(&output_shape));
+    for i in 0..output_shape[0] {
+        let mut indices = Vec::new();
+        let start = effective_starts[1] as isize;
+        let end = effective_ends[1] as isize;
+        let step = effective_steps[1];
+        if step < 0 {
+            let mut idx = start;
+            while idx >= end && idx < arr.shape()[1] as isize {
+                indices.push(idx as usize);
+                idx += step;
+            }
+        } else {
+            let mut idx = start;
+            while idx < end && idx < arr.shape()[1] as isize {
+                indices.push(idx as usize);
+                idx += step;
             }
         }
+        for (j, &idx) in indices.iter().enumerate() {
+            output[[i, j]] = arr[[i, idx]];
+        }
+    }
+    let result = output;
+    
+    Ok(ndarray_to_ort(ArrayDResult::Int32(result), input_dtype))
         
-        let sliced = arr.slice(&slice_info[..]);
-        let result = sliced.to_owned();
-        
-        Ok(ndarray_to_ort(ArrayDResult::Int32(result), input_dtype))
     },
     ArrayDResult::Int64(arr) => {
-        let mut slice_info = Vec::with_capacity(rank);
-        for axis in 0..rank {
-            let start = effective_starts[axis] as isize;
-            let end = effective_ends[axis] as isize;
-            let step = effective_steps[axis];
-            
-            if step > 0 {
-                slice_info.push(ndarray::SliceInfoElem::Slice {
-                    start,
-                    end: Some(end),
-                    step,
-                });
-            } else {
-                slice_info.push(ndarray::SliceInfoElem::Slice {
-                    start,
-                    end: if end == -1 { None } else { Some(end) },
-                    step,
-                });
+        let mut output = ArrayD::zeros(ndarray::IxDyn(&output_shape));
+    for i in 0..output_shape[0] {
+        let mut indices = Vec::new();
+        let start = effective_starts[1] as isize;
+        let end = effective_ends[1] as isize;
+        let step = effective_steps[1];
+        if step < 0 {
+            let mut idx = start;
+            while idx >= end && idx < arr.shape()[1] as isize {
+                indices.push(idx as usize);
+                idx += step;
+            }
+        } else {
+            let mut idx = start;
+            while idx < end && idx < arr.shape()[1] as isize {
+                indices.push(idx as usize);
+                idx += step;
             }
         }
-        
-        let sliced = arr.slice(&slice_info[..]);
-        let result = sliced.to_owned();
-        
-        Ok(ndarray_to_ort(ArrayDResult::Int64(result), input_dtype))
+        for (j, &idx) in indices.iter().enumerate() {
+            output[[i, j]] = arr[[i, idx]];
+        }
+    }
+    let result = output;
+    
+    Ok(ndarray_to_ort(ArrayDResult::Int64(result), input_dtype))
     },
     ArrayDResult::Boolean(arr) => {
-        let mut slice_info = Vec::with_capacity(rank);
-        for axis in 0..rank {
-            let start = effective_starts[axis] as isize;
-            let end = effective_ends[axis] as isize;
-            let step = effective_steps[axis];
-            
-            if step > 0 {
-                slice_info.push(ndarray::SliceInfoElem::Slice {
-                    start,
-                    end: Some(end),
-                    step,
-                });
-            } else {
-                slice_info.push(ndarray::SliceInfoElem::Slice {
-                    start,
-                    end: if end == -1 { None } else { Some(end) },
-                    step,
-                });
+let mut output=ArrayD::from_elem(ndarray::IxDyn(&output_shape), false);
+    for i in 0..output_shape[0] {
+        let mut indices = Vec::new();
+        let start = effective_starts[1] as isize;
+        let end = effective_ends[1] as isize;
+        let step = effective_steps[1];
+        if step < 0 {
+            let mut idx = start;
+            while idx >= end && idx < arr.shape()[1] as isize {
+                indices.push(idx as usize);
+                idx += step;
+            }
+        } else {
+            let mut idx = start;
+            while idx < end && idx < arr.shape()[1] as isize {
+                indices.push(idx as usize);
+                idx += step;
             }
         }
+        for (j, &idx) in indices.iter().enumerate() {
+            output[[i, j]] = arr[[i, idx]];
+        }
+    }
+    let result = output;
+    
+    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), input_dtype))
         
-        let sliced = arr.slice(&slice_info[..]);
-        let result = sliced.to_owned();
-        
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), input_dtype))
     },
     _ => Err(OrtError::TypeMismatch(format!("Unsupported data type for Slice operation: {:?}", input_dtype))),
 }

@@ -1860,7 +1860,667 @@ fn test_op_round_special_values() {
         _ => panic!("Expected float array"),
     }
 }
-    
+
+    // Tests for op_slice
+    #[test]
+    fn test_op_slice_basic_2d() {
+        // Test basic 2D slicing
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3 matrix
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 3],
+            DataType::Float,
+        );
+
+        // starts = [0, 1], ends = [2, 3], axes = [0, 1], steps = [1, 1]
+        let starts = create_ort_tensor(
+            vec![0i64, 1].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![2i64, 3].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![0i64, 1].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2],
+            DataType::Int64,
+        );
+        let steps = create_ort_tensor(
+            vec![1i64, 1].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes, steps];
+        let result = OrtEngine::op_slice(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected: slice from [0:2, 1:3] = [[2.0, 3.0], [5.0, 6.0]]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[2, 2]), vec![2.0f32, 3.0, 5.0, 6.0]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_negative_indices() {
+        // Test slicing with negative indices
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3 matrix
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 3],
+            DataType::Float,
+        );
+
+        // starts = [-2], ends = [-1], axes = [0], steps = [1]
+        let starts = create_ort_tensor(
+            vec![-2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![-1i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes];
+        let result = OrtEngine::op_slice(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected: slice from [-2:-1, :] = first row only
+        let expected = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![1.0f32, 2.0, 3.0]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_with_steps() {
+        // Test slicing with step > 1
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]; // 1x8 array
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![1, 8],
+            DataType::Float,
+        );
+
+        // starts = [0], ends = [8], axes = [1], steps = [2]
+        let starts = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![8i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![1i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let steps = create_ort_tensor(
+            vec![2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes, steps];
+        let result = OrtEngine::op_slice(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected: every 2nd element = [1.0, 3.0, 5.0, 7.0]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[1, 4]), vec![1.0f32, 3.0, 5.0, 7.0]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+fn test_op_slice_negative_steps() {
+    // Test slicing with negative steps (reverse)
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 1x6 array
+    let input = create_ort_tensor(
+        input_data
+            .iter()
+            .flat_map(|x| x.to_le_bytes().to_vec())
+            .collect(),
+        vec![1, 6],
+        DataType::Float,
+    );
+
+    // Slice parameters: start at index 5, end at index 0 (exclusive), step by -2 along axis 1
+    let starts = create_ort_tensor(
+        vec![5i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    let ends = create_ort_tensor(
+        vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    let axes = create_ort_tensor(
+        vec![1i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    let steps = create_ort_tensor(
+        vec![-2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+
+    let node = NodeProto::default(); // Ensure this is configured for Slice op
+    let inputs = vec![input, starts, ends, axes, steps];
+    let result = OrtEngine::op_slice(&node, &inputs)
+        .expect("Slice operation failed");
+    let result_array = ort_to_ndarray(&result)
+        .expect("Failed to convert ORT tensor to ndarray");
+
+    // Expected: reverse every 2nd element from index 5 to 0 = [6.0, 4.0, 2.0]
+    let expected = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![6.0f32, 4.0, 2.0])
+        .expect("Failed to create expected array");
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array, got {:?}", result_array),
+    }
+}
+
+    #[test]
+    fn test_op_slice_negative_steps_int32() {
+        // Test slicing with negative steps (reverse) for Int32
+        let input_data = vec![1i32, 2, 3, 4, 5, 6]; // 1x6 array
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![1, 6],
+            DataType::Int32,
+        );
+
+        // Slice parameters: start at index 5, end at index 0 (exclusive), step by -2 along axis 1
+        let starts = create_ort_tensor(
+            vec![5i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![1i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let steps = create_ort_tensor(
+            vec![-2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes, steps];
+        let result = OrtEngine::op_slice(&node, &inputs)
+            .expect("Slice operation failed");
+        let result_array = ort_to_ndarray(&result)
+            .expect("Failed to convert ORT tensor to ndarray");
+
+        // Expected: reverse every 2nd element from index 5 to 0 = [6, 4, 2]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![6i32, 4, 2])
+            .expect("Failed to create expected array");
+        match result_array {
+            ArrayDResult::Int32(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected int32 array, got {:?}", result_array),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_negative_steps_int64() {
+        // Test slicing with negative steps (reverse) for Int64
+        let input_data = vec![1i64, 2, 3, 4, 5, 6]; // 1x6 array
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![1, 6],
+            DataType::Int64,
+        );
+
+        // Slice parameters: start at index 5, end at index 0 (exclusive), step by -2 along axis 1
+        let starts = create_ort_tensor(
+            vec![5i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![1i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let steps = create_ort_tensor(
+            vec![-2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes, steps];
+        let result = OrtEngine::op_slice(&node, &inputs)
+            .expect("Slice operation failed");
+        let result_array = ort_to_ndarray(&result)
+            .expect("Failed to convert ORT tensor to ndarray");
+
+        // Expected: reverse every 2nd element from index 5 to 0 = [6, 4, 2]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![6i64, 4, 2])
+            .expect("Failed to create expected array");
+        match result_array {
+            ArrayDResult::Int64(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected int64 array, got {:?}", result_array),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_negative_steps_boolean() {
+        // Test slicing with negative steps (reverse) for Boolean
+        let input_data = vec![true, false, true, false, true, false]; // 1x6 array
+        let input = create_ort_tensor(
+            input_data.iter().map(|&b| b as u8).collect(),
+            vec![1, 6],
+            DataType::Boolean,
+        );
+
+        // Slice parameters: start at index 5, end at index 0 (exclusive), step by -2 along axis 1
+        let starts = create_ort_tensor(
+            vec![5i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![1i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let steps = create_ort_tensor(
+            vec![-2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes, steps];
+        let result = OrtEngine::op_slice(&node, &inputs)
+            .expect("Slice operation failed");
+        let result_array = ort_to_ndarray(&result)
+            .expect("Failed to convert ORT tensor to ndarray");
+
+        // Expected: reverse every 2nd element from index 5 to 0 = [false, false, false]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![false, false, false])
+            .expect("Failed to create expected array");
+        match result_array {
+            ArrayDResult::Boolean(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected boolean array, got {:?}", result_array),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_int32_data() {
+        // Test slicing with int32 data
+        let input_data = vec![1i32, 2, 3, 4, 5, 6]; // 2x3 matrix
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 3],
+            DataType::Int32,
+        );
+
+        // starts = [0], ends = [2], axes = [1], steps = [1]
+        let starts = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![1i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes];
+        let result = OrtEngine::op_slice(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected: slice [:, 0:2] = [[1, 2], [4, 5]]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[2, 2]), vec![1i32, 2, 4, 5]).unwrap();
+        match result_array {
+            ArrayDResult::Int32(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected int32 array"),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_boolean_data() {
+        // Test slicing with boolean data
+        let input_data = vec![true, false, true, false, true, false]; // 2x3 matrix
+        let input = create_ort_tensor(
+            input_data.iter().map(|&b| b as u8).collect(),
+            vec![2, 3],
+            DataType::Boolean,
+        );
+
+        // starts = [0], ends = [1], axes = [0], steps = [1]
+        let starts = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![1i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes];
+        let result = OrtEngine::op_slice(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected: slice [0:1, :] = first row only = [true, false, true]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![true, false, true]).unwrap();
+        match result_array {
+            ArrayDResult::Boolean(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected boolean array"),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_default_axes() {
+        // Test slicing without providing axes (should default to [0, 1, ...])
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // 2x3 matrix
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 3],
+            DataType::Float,
+        );
+
+        // starts = [0, 1], ends = [1, 3] (no axes provided)
+        let starts = create_ort_tensor(
+            vec![0i64, 1].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![1i64, 3].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends]; // No axes or steps
+        let result = OrtEngine::op_slice(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected: slice [0:1, 1:3] = [[2.0, 3.0]]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[1, 2]), vec![2.0f32, 3.0]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_error_mismatched_lengths() {
+        // Test error case: mismatched starts and ends lengths
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![4],
+            DataType::Float,
+        );
+
+        let starts = create_ort_tensor(
+            vec![0i64, 1].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![4i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends];
+        let result = OrtEngine::op_slice(&node, &inputs);
+
+        assert!(matches!(
+            result,
+            Err(OrtError::InvalidTensorData(msg)) if msg.contains("Starts and ends must have the same length")
+        ));
+    }
+
+    #[test]
+    fn test_op_slice_error_out_of_bounds_axis() {
+        // Test error case: axis out of bounds
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![4],
+            DataType::Float,
+        );
+
+        let starts = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![4i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![5i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(), // Out of bounds
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes];
+        let result = OrtEngine::op_slice(&node, &inputs);
+
+        assert!(matches!(
+            result,
+            Err(OrtError::InvalidTensorData(msg)) if msg.contains("out of bounds")
+        ));
+    }
+
+    #[test]
+    fn test_op_slice_empty_result() {
+        // Test case that results in empty slice
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![4],
+            DataType::Float,
+        );
+
+        // starts = [2], ends = [2] (empty range)
+        let starts = create_ort_tensor(
+            vec![2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends];
+        let result = OrtEngine::op_slice(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected: empty slice
+        let expected = ArrayD::from_shape_vec(IxDyn(&[0]), vec![]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_int64_data() {
+        // Test slicing with int64 data
+        let input_data = vec![10i64, 20, 30, 40, 50, 60]; // 2x3 matrix
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 3],
+            DataType::Int64,
+        );
+
+        // starts = [1], ends = [2], axes = [0]
+        let starts = create_ort_tensor(
+            vec![1i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![2i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![0i64].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![1],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes];
+        let result = OrtEngine::op_slice(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected: slice [1:2, :] = second row only = [40, 50, 60]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![40i64, 50, 60]).unwrap();
+        match result_array {
+            ArrayDResult::Int64(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected int64 array"),
+        }
+    }
+
+    #[test]
+    fn test_op_slice_3d_tensor() {
+        // Test slicing with 3D tensor
+        let input_data: Vec<f32> = (1..=24).map(|x| x as f32).collect(); // 2x3x4 tensor
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 3, 4],
+            DataType::Float,
+        );
+
+        // starts = [0, 1, 0], ends = [1, 3, 2], axes = [0, 1, 2]
+        let starts = create_ort_tensor(
+            vec![0i64, 1, 0].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![3],
+            DataType::Int64,
+        );
+        let ends = create_ort_tensor(
+            vec![1i64, 3, 2].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![3],
+            DataType::Int64,
+        );
+        let axes = create_ort_tensor(
+            vec![0i64, 1, 2].iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![3],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input, starts, ends, axes];
+        let result = OrtEngine::op_slice(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // Expected: slice [0:1, 1:3, 0:2] = first batch, rows 1-2, columns 0-1
+        // Original tensor: [[[1,2,3,4], [5,6,7,8], [9,10,11,12]], [[13,14,15,16], [17,18,19,20], [21,22,23,24]]]
+        // Result should be: [[[5,6], [9,10]]]
+        let expected = ArrayD::from_shape_vec(IxDyn(&[1, 2, 2]), vec![5.0f32, 6.0, 9.0, 10.0]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
 
 
 

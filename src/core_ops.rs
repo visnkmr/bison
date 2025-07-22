@@ -844,69 +844,55 @@ return Err(OrtError::InvalidTensorData(
             output_channels, group).into()));
 }
 
-// For simplicity, we'll implement 2D convolution only
-if x_shape.len() != 4 || w_shape.len() != 4 {
-return Err(OrtError::InvalidTensorData("This implementation only supports 2D convolution".into()));
+// For simplicity, we'll implement 1D and 2D convolution
+if x_shape.len() < 3 || w_shape.len() < 3 {
+    return Err(OrtError::InvalidTensorData("Convolution requires at least 3D tensors".into()));
 }
 
-let input_height = x_shape[2];
-let input_width = x_shape[3];
-let kernel_height = kernel_shape[0] as usize;
-let kernel_width = kernel_shape[1] as usize;
-let stride_h = strides[0] as usize;
-let stride_w = strides[1] as usize;
-let dilation_h = dilations[0] as usize;
-let dilation_w = dilations[1] as usize;
+// Determine if this is 1D or 2D convolution based on input shapes
+let is_1d = x_shape.len() == 3 || (x_shape.len() == 4 && x_shape[3] == 1) || 
+            kernel_shape.len() == 1 || (kernel_shape.len() >= 2 && kernel_shape[1] == 1);
 
+if is_1d {
+    // 1D convolution
+    let input_length = if x_shape.len() == 3 { x_shape[2] } else { x_shape[2] };
+    let kernel_length = kernel_shape[0] as usize;
+    let stride_l = strides[0] as usize;
+    let dilation_l = dilations[0] as usize;
 // Calculate output dimensions and padding
-let (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = match String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() {
+    let (output_length, pad_l_begin, pad_l_end) = match String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() {
 "NOTSET" => {
-    if pads.len() != 4 {
-        return Err(OrtError::InvalidTensorData("For NOTSET auto_pad, pads must have 4 values".into()));
+            if pads.len() < 2 {
+                return Err(OrtError::InvalidTensorData("For NOTSET auto_pad in 1D, pads must have at least 2 values".into()));
     }
-    let pad_h_begin = pads[0] as usize;
-    let pad_w_begin = pads[1] as usize;
-    let pad_h_end = pads[2] as usize;
-    let pad_w_end = pads[3] as usize;
-    
-    let output_height = (input_height + pad_h_begin + pad_h_end - (kernel_height - 1) * dilation_h - 1) / stride_h + 1;
-    let output_width = (input_width + pad_w_begin + pad_w_end - (kernel_width - 1) * dilation_w - 1) / stride_w + 1;
-    
-    (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+            let pad_l_begin = pads[0] as usize;
+            let pad_l_end = pads[1] as usize;
+            let output_length = (input_length + pad_l_begin + pad_l_end - (kernel_length - 1) * dilation_l - 1) / stride_l + 1;
+            
+            (output_length, pad_l_begin, pad_l_end)
 },
 "VALID" => {
-    let output_height = (input_height - (kernel_height - 1) * dilation_h - 1) / stride_h + 1;
-    let output_width = (input_width - (kernel_width - 1) * dilation_w - 1) / stride_w + 1;
-    (output_height, output_width, 0, 0, 0, 0)
+            let output_length = (input_length - (kernel_length - 1) * dilation_l - 1) / stride_l + 1;
+            (output_length, 0, 0)
 },
 "SAME_UPPER" | "SAME_LOWER" => {
-    let output_height = (input_height + stride_h - 1) / stride_h;
-    let output_width = (input_width + stride_w - 1) / stride_w;
-    
-    let pad_h_needed = (output_height - 1) * stride_h + (kernel_height - 1) * dilation_h + 1 - input_height;
-    let pad_w_needed = (output_width - 1) * stride_w + (kernel_width - 1) * dilation_w + 1 - input_width;
-    
-    let (pad_h_begin, pad_h_end) = if String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() == "SAME_UPPER" {
-        (pad_h_needed / 2, pad_h_needed - pad_h_needed / 2)
+            let output_length = (input_length + stride_l - 1) / stride_l;
+            let pad_l_needed = (output_length - 1) * stride_l + (kernel_length - 1) * dilation_l + 1 - input_length;
+            let (pad_l_begin, pad_l_end) = if String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() == "SAME_UPPER" {
+                (pad_l_needed / 2, pad_l_needed - pad_l_needed / 2)
     } else {
-        (pad_h_needed - pad_h_needed / 2, pad_h_needed / 2)
+                (pad_l_needed - pad_l_needed / 2, pad_l_needed / 2)
     };
     
-    let (pad_w_begin, pad_w_end) = if String::from_utf8(auto_pad).unwrap().to_string().as_str() == "SAME_UPPER" {
-        (pad_w_needed / 2, pad_w_needed - pad_w_needed / 2)
-    } else {
-        (pad_w_needed - pad_w_needed / 2, pad_w_needed / 2)
-    };
-    
-    (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+            (output_length, pad_l_begin, pad_l_end)
 },
 _ => return Err(OrtError::InvalidTensorData(format!("Unsupported auto_pad value: {:?}", auto_pad).into())),
 };
 
-// Create output array
-let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[batch_size, output_channels, output_height, output_width]));
+    // Create output array for 1D convolution
+    let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[batch_size, output_channels, output_length]));
 
-// Perform convolution
+    // Perform 1D convolution
 for n in 0..batch_size {
 for g in 0..group {
     let oc_per_group = output_channels / group;
@@ -915,46 +901,155 @@ for g in 0..group {
     for oc_within_group in 0..oc_per_group {
         let oc = g * oc_per_group + oc_within_group;
         
-        for oh in 0..output_height {
-            for ow in 0..output_width {
+                for ol in 0..output_length {
                 let mut sum = 0.0;
                 
                 for ic_within_group in 0..ic_per_group {
                     let ic = g * ic_per_group + ic_within_group;
                     
-                    for kh in 0..kernel_height {
-                        for kw in 0..kernel_width {
-                            let ih = oh * stride_h + kh * dilation_h;
-                            let iw = ow * stride_w + kw * dilation_w;
-                            
+                        for kl in 0..kernel_length {
+                            let il = ol * stride_l + kl * dilation_l;
                             // Apply padding
-                            let ih_padded = ih as isize - pad_h_begin as isize;
-                            let iw_padded = iw as isize - pad_w_begin as isize;
-                            
+                            let il_padded = il as isize - pad_l_begin as isize;
                             // Check if the input position is valid
-                            if ih_padded >= 0 && ih_padded < input_height as isize && 
-                                iw_padded >= 0 && iw_padded < input_width as isize {
-                                sum += x_array[[n, ic, ih_padded as usize, iw_padded as usize]] * 
-                                        w_array[[oc, ic_within_group, kh, kw]];
-                            }
+                            if il_padded >= 0 && il_padded < input_length as isize {
+                                if x_shape.len() == 3 {
+                                    sum += x_array[[n, ic, il_padded as usize]] * 
+                                            w_array[[oc, ic_within_group, kl]];
+                                } else {
+                                    sum += x_array[[n, ic, il_padded as usize, 0]] * 
+                                            w_array[[oc, ic_within_group, kl, 0]];
                         }
                     }
                 }
-                
-                // Add bias if present
-                if let Some(ref b_arr) = b_array {
-                    sum += b_arr[oc];
                 }
                 
-                output[[n, oc, oh, ow]] = sum;
+                    // Add bias if present
+                    if let Some(ref b_arr) = b_array {
+                        sum += b_arr[oc];
             }
+                    
+                    output[[n, oc, ol]] = sum;
         }
     }
 }
 }
 
+    return Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype))
+} else {
+    // 2D convolution
+    if x_shape.len() != 4 || w_shape.len() != 4 {
+        return Err(OrtError::InvalidTensorData("This implementation only supports 2D convolution".into()));
+    }
+
+    let input_height = x_shape[2];
+    let input_width = x_shape[3];
+    let kernel_height = kernel_shape[0] as usize;
+    let kernel_width = kernel_shape[1] as usize;
+    let stride_h = strides[0] as usize;
+    let stride_w = strides[1] as usize;
+    let dilation_h = dilations[0] as usize;
+    let dilation_w = dilations[1] as usize;
+
+    // Calculate output dimensions and padding
+    let (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = match String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() {
+        "NOTSET" => {
+            if pads.len() != 4 {
+                return Err(OrtError::InvalidTensorData("For NOTSET auto_pad, pads must have 4 values".into()));
+            }
+            let pad_h_begin = pads[0] as usize;
+            let pad_w_begin = pads[1] as usize;
+            let pad_h_end = pads[2] as usize;
+            let pad_w_end = pads[3] as usize;
+            
+            let output_height = (input_height + pad_h_begin + pad_h_end - (kernel_height - 1) * dilation_h - 1) / stride_h + 1;
+            let output_width = (input_width + pad_w_begin + pad_w_end - (kernel_width - 1) * dilation_w - 1) / stride_w + 1;
+            
+            (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+        },
+        "VALID" => {
+            let output_height = (input_height - (kernel_height - 1) * dilation_h - 1) / stride_h + 1;
+            let output_width = (input_width - (kernel_width - 1) * dilation_w - 1) / stride_w + 1;
+            (output_height, output_width, 0, 0, 0, 0)
+        },
+        "SAME_UPPER" | "SAME_LOWER" => {
+            let output_height = (input_height + stride_h - 1) / stride_h;
+            let output_width = (input_width + stride_w - 1) / stride_w;
+            
+            let pad_h_needed = (output_height - 1) * stride_h + (kernel_height - 1) * dilation_h + 1 - input_height;
+            let pad_w_needed = (output_width - 1) * stride_w + (kernel_width - 1) * dilation_w + 1 - input_width;
+            
+            let (pad_h_begin, pad_h_end) = if String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() == "SAME_UPPER" {
+                (pad_h_needed / 2, pad_h_needed - pad_h_needed / 2)
+            } else {
+                (pad_h_needed - pad_h_needed / 2, pad_h_needed / 2)
+            };
+            
+            let (pad_w_begin, pad_w_end) = if String::from_utf8(auto_pad).unwrap().to_string().as_str() == "SAME_UPPER" {
+                (pad_w_needed / 2, pad_w_needed - pad_w_needed / 2)
+            } else {
+                (pad_w_needed - pad_w_needed / 2, pad_w_needed / 2)
+            };
+            
+            (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+        },
+        _ => return Err(OrtError::InvalidTensorData(format!("Unsupported auto_pad value: {:?}", auto_pad).into())),
+    };
+
+    // Create output array
+    let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[batch_size, output_channels, output_height, output_width]));
+
+    // Perform convolution
+    for n in 0..batch_size {
+        for g in 0..group {
+            let oc_per_group = output_channels / group;
+            let ic_per_group = input_channels / group;
+            
+            for oc_within_group in 0..oc_per_group {
+                let oc = g * oc_per_group + oc_within_group;
+                
+                for oh in 0..output_height {
+                    for ow in 0..output_width {
+                        let mut sum = 0.0;
+                        
+                        for ic_within_group in 0..ic_per_group {
+                            let ic = g * ic_per_group + ic_within_group;
+                            
+                            for kh in 0..kernel_height {
+                                for kw in 0..kernel_width {
+                                    let ih = oh * stride_h + kh * dilation_h;
+                                    let iw = ow * stride_w + kw * dilation_w;
+                                    
+                                    // Apply padding
+                                    let ih_padded = ih as isize - pad_h_begin as isize;
+                                    let iw_padded = iw as isize - pad_w_begin as isize;
+                                    
+                                    // Check if the input position is valid
+                                    if ih_padded >= 0 && ih_padded < input_height as isize && 
+                                        iw_padded >= 0 && iw_padded < input_width as isize {
+                                        sum += x_array[[n, ic, ih_padded as usize, iw_padded as usize]] * 
+                                                w_array[[oc, ic_within_group, kh, kw]];
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Add bias if present
+                        if let Some(ref b_arr) = b_array {
+                            sum += b_arr[oc];
+                        }
+                        
+                        output[[n, oc, oh, ow]] = sum;
+                    }
+                }
+            }
+        }
+    }
+    
+    return Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype))
+}
 // Convert result back to OrtValue
-Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype))
+// Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype))
         
     }
 
@@ -2857,73 +2952,59 @@ match (array1, array2) {
                         input_channels, w_shape[0]).into()));
         }
 
-        // For simplicity, we'll implement 2D convolution transpose only
-        if x_shape.len() != 4 || w_shape.len() != 4 {
-            return Err(OrtError::InvalidTensorData("This implementation only supports 2D convolution transpose".into()));
+// For simplicity, we'll implement 1D and 2D convolution transpose
+        if x_shape.len() < 3 || w_shape.len() < 3 {
+            return Err(OrtError::InvalidTensorData("Convolution transpose requires at least 3D tensors".into()));
         }
 
-        let input_height = x_shape[2];
-        let input_width = x_shape[3];
-        let kernel_height = kernel_shape[0] as usize;
-        let kernel_width = kernel_shape[1] as usize;
-        let stride_h = strides[0] as usize;
-        let stride_w = strides[1] as usize;
-        let dilation_h = dilations[0] as usize;
-        let dilation_w = dilations[1] as usize;
-        let output_padding_h = output_padding[0] as usize;
-        let output_padding_w = output_padding[1] as usize;
+        // Determine if this is 1D or 2D convolution based on input shapes
+        let is_1d = x_shape.len() == 3 || (x_shape.len() == 4 && x_shape[3] == 1) || 
+                    kernel_shape.len() == 1 || (kernel_shape.len() >= 2 && kernel_shape[1] == 1);
 
+        if is_1d {
+            // 1D convolution transpose
+            let input_length = if x_shape.len() == 3 { x_shape[2] } else { x_shape[2] };
+            let kernel_length = kernel_shape[0] as usize;
+            let stride_l = strides[0] as usize;
+            let dilation_l = dilations[0] as usize;
+            let output_padding_l = if output_padding.len() > 0 { output_padding[0] as usize } else { 0 };
         // Calculate output dimensions and padding
-        let (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = if let Some(output_shape) = output_shape_attr {
+            let (output_length, pad_l_begin, pad_l_end) = if let Some(output_shape) = output_shape_attr {
             // If output_shape is provided, calculate padding
-            let output_height = output_shape[0] as usize;
-            let output_width = output_shape[1] as usize;
-            
-            let total_padding_h = stride_h * (input_height - 1) + output_padding_h + ((kernel_height - 1) * dilation_h + 1) - output_height;
-            let total_padding_w = stride_w * (input_width - 1) + output_padding_w + ((kernel_width - 1) * dilation_w + 1) - output_width;
-            
-            let (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = match String::from_utf8(auto_pad.clone()).unwrap().as_str() {
+                let output_length = output_shape[0] as usize;
+                let total_padding_l = stride_l * (input_length - 1) + output_padding_l + ((kernel_length - 1) * dilation_l + 1) - output_length;
+                let (pad_l_begin, pad_l_end) = match String::from_utf8(auto_pad.clone()).unwrap().as_str() {
                 "SAME_UPPER" => {
-                    let pad_h_begin = total_padding_h / 2;
-                    let pad_h_end = total_padding_h - pad_h_begin;
-                    let pad_w_begin = total_padding_w / 2;
-                    let pad_w_end = total_padding_w - pad_w_begin;
-                    (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+                        let pad_l_begin = total_padding_l / 2;
+                        let pad_l_end = total_padding_l - pad_l_begin;
+                        (pad_l_begin, pad_l_end)
                 },
                 "SAME_LOWER" => {
-                    let pad_h_end = total_padding_h / 2;
-                    let pad_h_begin = total_padding_h - pad_h_end;
-                    let pad_w_end = total_padding_w / 2;
-                    let pad_w_begin = total_padding_w - pad_w_end;
-                    (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+                        let pad_l_end = total_padding_l / 2;
+                        let pad_l_begin = total_padding_l - pad_l_end;
+                        (pad_l_begin, pad_l_end)
                 },
                 _ => {
-                    let pad_h_begin = total_padding_h / 2;
-                    let pad_h_end = total_padding_h - pad_h_begin;
-                    let pad_w_begin = total_padding_w / 2;
-                    let pad_w_end = total_padding_w - pad_w_begin;
-                    (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+                        let pad_l_begin = total_padding_l / 2;
+                        let pad_l_end = total_padding_l - pad_l_begin;
+                        (pad_l_begin, pad_l_end)
                 }
             };
             
-            (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+                (output_length, pad_l_begin, pad_l_end)
         } else {
             // Use provided pads to calculate output dimensions
-            let pad_h_begin = pads[0] as usize;
-            let pad_w_begin = pads[1] as usize;
-            let pad_h_end = pads[2] as usize;
-            let pad_w_end = pads[3] as usize;
-            
-            let output_height = stride_h * (input_height - 1) + output_padding_h + ((kernel_height - 1) * dilation_h + 1) - pad_h_begin - pad_h_end;
-            let output_width = stride_w * (input_width - 1) + output_padding_w + ((kernel_width - 1) * dilation_w + 1) - pad_w_begin - pad_w_end;
-            
-            (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+                let pad_l_begin = if pads.len() > 0 { pads[0] as usize } else { 0 };
+                let pad_l_end = if pads.len() > 1 { pads[1] as usize } else { 0 };
+                let output_length = stride_l * (input_length - 1) + output_padding_l + ((kernel_length - 1) * dilation_l + 1) - pad_l_begin - pad_l_end;
+                
+                (output_length, pad_l_begin, pad_l_end)
         };
 
         // Create output array
-        let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[batch_size, output_channels, output_height, output_width]));
+            let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[batch_size, output_channels, output_length]));
 
-        // Perform convolution transpose
+            // Perform 1D convolution transpose
         for n in 0..batch_size {
             for g in 0..group {
                 let oc_per_group = output_channels / group;
@@ -2935,44 +3016,156 @@ match (array1, array2) {
                     for ic_within_group in 0..ic_per_group {
                         let ic = g * ic_per_group + ic_within_group;
                         
-                        for ih in 0..input_height {
-                            for iw in 0..input_width {
-                                let x_val = x_array[[n, ic, ih, iw]];
+                            for il in 0..input_length {
+                                let x_val = if x_shape.len() == 3 {
+                                    x_array[[n, ic, il]]
+                                } else {
+                                    x_array[[n, ic, il, 0]]
+                                };
                                 
-                                for kh in 0..kernel_height {
-                                    for kw in 0..kernel_width {
-                                        let w_val = w_array[[ic, oc_within_group, kh, kw]];
+                                for kl in 0..kernel_length {
+                                    let w_val = if w_shape.len() == 3 {
+                                        w_array[[ic, oc_within_group, kl]]
+                                    } else {
+                                        w_array[[ic, oc_within_group, kl, 0]]
+                                    };
                                         
-                                        let oh_start = ih * stride_h - pad_h_begin + kh * dilation_h;
-                                        let ow_start = iw * stride_w - pad_w_begin + kw * dilation_w;
-                                        
+                                    let ol_start = il * stride_l - pad_l_begin + kl * dilation_l;
                                         // Check if the output position is valid
-                                        if oh_start >= 0 && oh_start < output_height && 
-                                        ow_start >= 0 && ow_start < output_width {
-                                            output[[n, oc, oh_start, ow_start]] += x_val * w_val;
+                                    if ol_start >= 0 && ol_start < output_length {
+                                        output[[n, oc, ol_start]] += x_val * w_val;
                                         }
                                     }
                                 }
                             }
-                        }
-                    }
-                    
-                    // Add bias if present
+                        // Add bias if present
                     if let Some(ref b_arr) = b_array {
-                        for oh in 0..output_height {
-                            for ow in 0..output_width {
-                                output[[n, oc, oh, ow]] += b_arr[oc];
+                            for ol in 0..output_length {
+                                output[[n, oc, ol]] += b_arr[oc];
                             }
                         }
                     }
                 }
             }
-        }
 
+            return Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype));
+        } else {
+            // 2D convolution transpose
+            if x_shape.len() != 4 || w_shape.len() != 4 {
+                return Err(OrtError::InvalidTensorData("This implementation only supports 2D convolution transpose".into()));
+            }
+
+            let input_height = x_shape[2];
+            let input_width = x_shape[3];
+            let kernel_height = kernel_shape[0] as usize;
+            let kernel_width = kernel_shape[1] as usize;
+            let stride_h = strides[0] as usize;
+            let stride_w = strides[1] as usize;
+            let dilation_h = dilations[0] as usize;
+            let dilation_w = dilations[1] as usize;
+            let output_padding_h = output_padding[0] as usize;
+            let output_padding_w = output_padding[1] as usize;
+
+            // Calculate output dimensions and padding
+            let (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = if let Some(output_shape) = output_shape_attr {
+                // If output_shape is provided, calculate padding
+                let output_height = output_shape[0] as usize;
+                let output_width = output_shape[1] as usize;
+                
+                let total_padding_h = stride_h * (input_height - 1) + output_padding_h + ((kernel_height - 1) * dilation_h + 1) - output_height;
+                let total_padding_w = stride_w * (input_width - 1) + output_padding_w + ((kernel_width - 1) * dilation_w + 1) - output_width;
+                
+                let (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = match String::from_utf8(auto_pad.clone()).unwrap().as_str() {
+                    "SAME_UPPER" => {
+                        let pad_h_begin = total_padding_h / 2;
+                        let pad_h_end = total_padding_h - pad_h_begin;
+                        let pad_w_begin = total_padding_w / 2;
+                        let pad_w_end = total_padding_w - pad_w_begin;
+                        (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+                    },
+                    "SAME_LOWER" => {
+                        let pad_h_end = total_padding_h / 2;
+                        let pad_h_begin = total_padding_h - pad_h_end;
+                        let pad_w_end = total_padding_w / 2;
+                        let pad_w_begin = total_padding_w - pad_w_end;
+                        (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+                    },
+                    _ => {
+                        let pad_h_begin = total_padding_h / 2;
+                        let pad_h_end = total_padding_h - pad_h_begin;
+                        let pad_w_begin = total_padding_w / 2;
+                        let pad_w_end = total_padding_w - pad_w_begin;
+                        (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+                    }
+                };
+                
+                (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+            } else {
+                // Use provided pads to calculate output dimensions
+                let pad_h_begin = pads[0] as usize;
+                let pad_w_begin = pads[1] as usize;
+                let pad_h_end = pads[2] as usize;
+                let pad_w_end = pads[3] as usize;
+                
+                let output_height = stride_h * (input_height - 1) + output_padding_h + ((kernel_height - 1) * dilation_h + 1) - pad_h_begin - pad_h_end;
+                let output_width = stride_w * (input_width - 1) + output_padding_w + ((kernel_width - 1) * dilation_w + 1) - pad_w_begin - pad_w_end;
+                
+                (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end)
+            };
+
+            // Create output array
+            let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[batch_size, output_channels, output_height, output_width]));
+
+            // Perform convolution transpose
+            for n in 0..batch_size {
+                for g in 0..group {
+                    let oc_per_group = output_channels / group;
+                    let ic_per_group = input_channels / group;
+                    
+                    for oc_within_group in 0..oc_per_group {
+                        let oc = g * oc_per_group + oc_within_group;
+                        
+                        for ic_within_group in 0..ic_per_group {
+                            let ic = g * ic_per_group + ic_within_group;
+                            
+                            for ih in 0..input_height {
+                                for iw in 0..input_width {
+                                    let x_val = x_array[[n, ic, ih, iw]];
+                                    
+                                    for kh in 0..kernel_height {
+                                        for kw in 0..kernel_width {
+                                            let w_val = w_array[[ic, oc_within_group, kh, kw]];
+                                            
+                                            let oh_start = ih * stride_h - pad_h_begin + kh * dilation_h;
+                                            let ow_start = iw * stride_w - pad_w_begin + kw * dilation_w;
+                                            
+                                            // Check if the output position is valid
+                                            if oh_start >= 0 && oh_start < output_height && 
+                                            ow_start >= 0 && ow_start < output_width {
+                                                output[[n, oc, oh_start, ow_start]] += x_val * w_val;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Add bias if present
+                        if let Some(ref b_arr) = b_array {
+                            for oh in 0..output_height {
+                                for ow in 0..output_width {
+                                    output[[n, oc, oh, ow]] += b_arr[oc];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         // Convert result back to OrtValue
         Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype))
         
     }
+}
        
     pub fn op_cumsum(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
             // Get the input tensors

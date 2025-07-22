@@ -480,7 +480,7 @@ impl Message for NodeProto {
                 prost::encoding::string::merge(wire_type, &mut self.op_type, buf, ctx)?;
                 //nowcommented  println!("NodeProto: Set op_type: {}", self.op_type);
             }
-            5 => {
+            7 => {
                 let mut bytes = Vec::new();
                 prost::encoding::bytes::merge(wire_type, &mut bytes, buf, ctx)?;
                 // Attempt to convert bytes to UTF-8 string, fallback to empty string if invalid
@@ -489,19 +489,19 @@ impl Message for NodeProto {
                 // prost::encoding::string::merge(wire_type, &mut self.domain, buf, ctx)?;
                 // println!("NodeProto: Set domain: {}", self.domain);
             }
-            7 => {
+            5 => {
                 // let mut attr = AttributeProto::default();
                 prost::encoding::message::merge_repeated(wire_type, &mut self.attributes, buf, ctx)?;
                 //nowcommented  println!("NodeProto: Added attribute (name: {})", attr.name);
                 // self.attributes.push(attr);
             }
-             8 => {
-                // Handle subgraph attributes (e.g., then_branch, else_branch, body)
-                let mut subgraph = GraphProto::default();
-                prost::encoding::message::merge(wire_type, &mut subgraph, buf, ctx)?;
-                //nowcommented  println!("NodeProto: Added subgraph for attribute");
-                self.subgraphs.insert(format!("subgraph_{}", self.subgraphs.len()), subgraph);
-            }
+            //  8 => {
+            //     // Handle subgraph attributes (e.g., then_branch, else_branch, body)
+            //     let mut subgraph = GraphProto::default();
+            //     prost::encoding::message::merge(wire_type, &mut subgraph, buf, ctx)?;
+            //     //nowcommented  println!("NodeProto: Added subgraph for attribute");
+            //     self.subgraphs.insert(format!("subgraph_{}", self.subgraphs.len()), subgraph);
+            // }
             _ => {
                  println!("NodeProto: Skipping unknown tag: {}", tag); //nowcommented
                 prost::encoding::skip_field(wire_type, tag, buf, ctx)?;
@@ -1395,6 +1395,7 @@ impl OrtEngine {
             let node_inputs = node.input.iter()
                 .map(|name| {
                     if name.is_empty() {
+                        
                         // Handle optional inputs (empty name indicates optional input)
                         Ok(None)
                     } else {

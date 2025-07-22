@@ -2631,5 +2631,849 @@ fn test_op_slice_negative_steps() {
     //     }
     // }
 
+    #[test]
+    fn test_op_softmax() {
+        // Test LogSoftmax operation (note: op_softmax actually implements LogSoftmax)
+        // Input: [1.0, 2.0, 3.0] along axis -1 (default)
+        let input_data = vec![1.0f32, 2.0, 3.0];
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![3],
+            DataType::Float,
+        );
+
+        // Create node with default axis (-1)
+        let mut node = NodeProto::default();
+        node.attributes = vec![AttributeProto {
+            name: "axis".to_string(),
+            i: -1,
+            ..Default::default()
+        }];
+
+        let result = OrtEngine::op_softmax(&node, &[input]).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        // For LogSoftmax: log(softmax(x)) = x - log(sum(exp(x)))
+        // For input [1, 2, 3]:
+        // exp([1, 2, 3]) = [e, e^2, e^3] ≈ [2.718, 7.389, 20.086]
+        // sum = 30.193
+        // log(sum) ≈ 3.408
+        // LogSoftmax = [1-3.408, 2-3.408, 3-3.408] = [-2.408, -1.408, -0.408]
+        
+        match result_array {
+            ArrayDResult::Float(arr) => {
+                assert_eq!(arr.shape(), &[3]);
+                // Check that the values are approximately correct for LogSoftmax
+                let values: Vec<f32> = arr.iter().cloned().collect();
+                
+                // The exact values depend on numerical precision, but we can check:
+                // 1. The largest input should have the largest (least negative) output
+                assert!(values[2] > values[1]);
+                assert!(values[1] > values[0]);
+                
+                // 2. All values should be negative (since log(probability) <= 0)
+                assert!(values.iter().all(|&x| x <= 0.0));
+                
+                // 3. The sum of exp(log_softmax) should be approximately 1
+                let exp_sum: f32 = values.iter().map(|&x| x.exp()).sum();
+                assert!((exp_sum - 1.0).abs() < 1e-6);
+            }
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_softmax_2d_axis_1() {
+        // Test LogSoftmax on 2D tensor with axis=1
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]; // Shape: [2, 3]
+        let input = create_ort_tensor(
+            input_data
+                .iter()
+                .flat_map(|x| x.to_le_bytes().to_vec())
+                .collect(),
+            vec![2, 3],
+            DataType::Float,
+        );
+
+        // Create node with axis=1
+        let mut node = NodeProto::default();
+        node.attributes = vec![AttributeProto {
+            name: "axis".to_string(),
+            i: 1,
+            ..Default::default()
+        }];
+
+        let result = OrtEngine::op_softmax(&node, &[input]).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        match result_array {
+            ArrayDResult::Float(arr) => {
+                assert_eq!(arr.shape(), &[2, 3]);
+                
+                // Check that LogSoftmax is applied along axis 1
+                // For each row, the sum of exp(log_softmax) should be 1
+                for row in 0..2 {
+                    let row_values: Vec<f32> = (0..3).map(|col| arr[[row, col]]).collect();
+                    let exp_sum: f32 = row_values.iter().map(|&x| x.exp()).sum();
+                    assert!((exp_sum - 1.0).abs() < 1e-6);
+                    
+                    // All values should be negative
+                    assert!(row_values.iter().all(|&x| x <= 0.0));
+                }
+            }
+            _ => panic!("Expected float array"),
+        }
+    }
+    #[test]
+    fn test_op_softmax_negative_inputs() {
+        let input_data = vec![-1.0f32, -2.0, -3.0];
+        let input = create_ort_tensor(
+            input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![3],
+            DataType::Float,
+        );
+        let mut node = NodeProto::default();
+        node.attributes = vec![AttributeProto {
+            name: "axis".to_string(),
+            i: -1,
+            ..Default::default()
+        }];
+        let result = OrtEngine::op_softmax(&node, &[input]).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => {
+                assert_eq!(arr.shape(), &[3]);
+                let values: Vec<f32> = arr.iter().cloned().collect();
+                assert!(values[0] > values[1]);
+                assert!(values[1] > values[2]);
+                assert!(values.iter().all(|&x| x <= 0.0));
+                let exp_sum: f32 = values.iter().map(|&x| x.exp()).sum();
+                assert!((exp_sum - 1.0).abs() < 1e-6);
+            }
+            _ => panic!("Expected float array"),
+        }
+    }
     
+
+    #[test]
+fn test_op_softmax_large_inputs() {
+    let input_data = vec![1000.0f32, 1001.0, 1002.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Float,
+    );
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: -1,
+        ..Default::default()
+    }];
+    let result = OrtEngine::op_softmax(&node, &[input]).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[3]);
+            let values: Vec<f32> = arr.iter().cloned().collect();
+            assert!(values[2] > values[1]);
+            assert!(values[1] > values[0]);
+            assert!(values.iter().all(|&x| x <= 0.0));
+            let exp_sum: f32 = values.iter().map(|&x| x.exp()).sum();
+            assert!((exp_sum - 1.0).abs() < 1e-6);
+            // Optional: Check approximate values
+            let expected = vec![-2.408, -1.408, -0.408];
+            for (v, e) in values.iter().zip(expected.iter()) {
+                println!("{}",(v - e).abs());
+                assert!((v - e).abs() < 1e-5);
+            }
+        }
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_softmax_single_element() {
+    let input_data = vec![5.0f32];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Float,
+    );
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: -1,
+        ..Default::default()
+    }];
+    let result = OrtEngine::op_softmax(&node, &[input]).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[1]);
+            let values: Vec<f32> = arr.iter().cloned().collect();
+            assert!((values[0] - 0.0).abs() < 1e-6);
+        }
+        _ => panic!("Expected float array"),
+    }
+}
+
+
+#[test]
+fn test_op_softmax_zero_inputs() {
+    let input_data = vec![0.0f32, 0.0, 0.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Float,
+    );
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: -1,
+        ..Default::default()
+    }];
+    let result = OrtEngine::op_softmax(&node, &[input]).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[3]);
+            let values: Vec<f32> = arr.iter().cloned().collect();
+            assert!((values[0] - (-1.0986123)).abs() < 1e-6);
+            assert!(values.iter().all(|&x| (x - values[0]).abs() < 1e-6));
+            let exp_sum: f32 = values.iter().map(|&x| x.exp()).sum();
+            assert!((exp_sum - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_softmax_multi_dim() {
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3],
+        DataType::Float,
+    );
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 1,
+        ..Default::default()
+    }];
+    let result = OrtEngine::op_softmax(&node, &[input]).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[2, 3]);
+            let values: Vec<f32> = arr.iter().cloned().collect();
+            let expected = vec![-2.408, -1.408, -0.408, -2.408, -1.408, -0.408];
+            for (v, e) in values.iter().zip(expected.iter()) {
+                assert!((v - e).abs() < 1e-5);
+            }
+            for i in 0..2 {
+                let row: Vec<f32> = values[i * 3..(i + 1) * 3].to_vec();
+                let exp_sum: f32 = row.iter().map(|&x| x.exp()).sum();
+                assert!((exp_sum - 1.0).abs() < 1e-6);
+            }
+        }
+        _ => panic!("Expected float array"),
+    }
+}
+#[test]
+#[should_panic(expected = "Invalid axis")]
+fn test_op_softmax_invalid_axis() {
+    let input_data = vec![1.0f32, 2.0, 3.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Float,
+    );
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 10,
+        ..Default::default()
+    }];
+    let _ = OrtEngine::op_softmax(&node, &[input]).unwrap();
+}
+#[test]
+#[should_panic(expected = "Invalid data type")]
+fn test_op_softmax_non_float_input() {
+    let input_data = vec![1i32, 2, 3];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Int32,
+    );
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: -1,
+        ..Default::default()
+    }];
+    let _ = OrtEngine::op_softmax(&node, &[input]).unwrap();
+}
+#[test]
+fn test_op_softmax_axis_0() {
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 2],
+        DataType::Float,
+    );
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 0,
+        ..Default::default()
+    }];
+    let result = OrtEngine::op_softmax(&node, &[input]).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[2, 2]);
+            let values: Vec<f32> = arr.iter().cloned().collect();
+            // For axis=0, apply LogSoftmax to columns: [1, 3] and [2, 4]
+            let col1_exp_sum: f32 = [values[0], values[2]].iter().map(|&x| x.exp()).sum();
+            let col2_exp_sum: f32 = [values[1], values[3]].iter().map(|&x| x.exp()).sum();
+            assert!((col1_exp_sum - 1.0).abs() < 1e-6);
+            assert!((col2_exp_sum - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_stft_real_signal_default() {
+    // Create a simple sine wave signal
+    let signal_data: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 64, 1] (batch_size=1, signal_length=64, channels=1)
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(64), Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 16)
+    let frame_step_value = 16i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create node with default attributes
+    let node = NodeProto::default();
+    
+    // Execute STFT operation
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step]).unwrap();
+    
+    // Verify result
+    match result {
+        OrtValue::Tensor { shape, dtype, .. } => {
+            assert_eq!(dtype, DataType::Float);
+            
+            // For a frame_length of 64 (default) and frame_step of 16, we should have:
+            // - 1 batch
+            // - (64-64)/16 + 1 = 1 frame
+            // - 64/2 + 1 = 33 frequency bins (onesided=true by default)
+            // - 2 channels (real and imaginary parts)
+            assert_eq!(shape, vec![Dimensions::Fixed(1), Dimensions::Fixed(1), Dimensions::Fixed(33), Dimensions::Fixed(2)]);
+        },
+        _ => panic!("Expected tensor output"),
+    }
+}
+
+#[test]
+fn test_op_stft_complex_signal() {
+    // Create a complex signal (real and imaginary parts)
+    let mut signal_data = Vec::new();
+    for i in 0..32 {
+        signal_data.push((i as f32 * 0.1).sin()); // Real part
+        signal_data.push((i as f32 * 0.1).cos()); // Imaginary part
+    }
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 32, 2] (batch_size=1, signal_length=32, channels=2)
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(32), Dimensions::Fixed(2)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 8)
+    let frame_step_value = 8i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create node with onesided=false attribute
+    let node = NodeProto {
+        attributes: vec![AttributeProto {
+            name: "onesided".to_string(),
+            i: 0, // false
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    
+    // Execute STFT operation
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step]).unwrap();
+    
+    // Verify result
+    match result {
+        OrtValue::Tensor { shape, dtype, .. } => {
+            assert_eq!(dtype, DataType::Float);
+            
+            // For a frame_length of 32 (default) and frame_step of 8, we should have:
+            // - 1 batch
+            // - (32-32)/8 + 1 = 1 frame
+            // - 32 frequency bins (onesided=false)
+            // - 2 channels (real and imaginary parts)
+            assert_eq!(shape, vec![Dimensions::Fixed(1), Dimensions::Fixed(1), Dimensions::Fixed(32), Dimensions::Fixed(2)]);
+        },
+        _ => panic!("Expected tensor output"),
+    }
+}
+
+#[test]
+fn test_op_stft_custom_window() {
+    // Create a simple signal
+    let signal_data: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 64, 1]
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(64), Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 16)
+    let frame_step_value = 16i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create Hann window of length 32
+    let window_data: Vec<f32> = (0..32).map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / 31.0).cos())).collect();
+    let window_bytes: Vec<u8> = window_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    let window = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(32)],
+        dtype: DataType::Float,
+        data: Arc::new(window_bytes),
+    };
+    
+    // Create node with default attributes
+    let node = NodeProto::default();
+    
+    // Create frame_length tensor (scalar value 32)
+    let frame_length_value = 32i64;
+    let frame_length = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_length_value.to_le_bytes().to_vec()),
+    };
+
+    // Execute STFT operation with custom window, explicitly passing None for frame_length
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step, window, frame_length]).unwrap();
+    
+    // Verify result
+    match result {
+        OrtValue::Tensor { shape, dtype, .. } => {
+            assert_eq!(dtype, DataType::Float);
+            
+            // For a frame_length of 32 (from window) and frame_step of 16, we should have:
+            // - 1 batch
+            // - (64-32)/16 + 1 = 3 frames
+            // - 32/2 + 1 = 17 frequency bins (onesided=true by default)
+            // - 2 channels (real and imaginary parts)
+            assert_eq!(shape, vec![Dimensions::Fixed(1), Dimensions::Fixed(3), Dimensions::Fixed(17), Dimensions::Fixed(2)]);
+        },
+        _ => panic!("Expected tensor output"),
+    }
+}
+
+#[test]
+fn test_op_stft_short_signal() {
+    // Create a short signal
+    let signal_data: Vec<f32> = (0..16).map(|i| (i as f32 * 0.1).sin()).collect();
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 16, 1]
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(16), Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 8)
+    let frame_step_value = 8i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create frame_length tensor (scalar value 32)
+    let frame_length_value = 32i64;
+    let frame_length = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_length_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create node with default attributes
+    let node = NodeProto::default();
+    
+    // Create default window tensor of length 32 (ones, simulating no windowing)
+    let window_data: Vec<f32> = vec![1.0f32; 32];
+    let window_bytes: Vec<u8> = window_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    let window = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(32)],
+        dtype: DataType::Float,
+        data: Arc::new(window_bytes),
+    };
+
+    // Create frame_length tensor (scalar value 32)
+    let frame_length_value = 32i64;
+    let frame_length = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_length_value.to_le_bytes().to_vec()),
+    };
+
+    // Execute STFT operation with explicit frame_length
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step, window,frame_length]).unwrap();
+    
+    // Verify result
+    match result {
+        OrtValue::Tensor { shape, dtype, .. } => {
+            assert_eq!(dtype, DataType::Float);
+            
+            // For a frame_length of 32 and frame_step of 8, we should have:
+            // - 1 batch
+            // - (16-32)/8 + 1 = -1 + 1 = 0 frames (but we should get at least 1 frame)
+            // - 32/2 + 1 = 17 frequency bins (onesided=true by default)
+            // - 2 channels (real and imaginary parts)
+            assert_eq!(shape, vec![Dimensions::Fixed(1), Dimensions::Fixed(1), Dimensions::Fixed(17), Dimensions::Fixed(2)]);
+        },
+        _ => panic!("Expected tensor output"),
+    }
+}
+
+#[test]
+fn test_op_stft_invalid_signal_shape() {
+    // Create a signal with invalid shape (missing channel dimension)
+    let signal_data: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 64] (missing channel dimension)
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(64)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 16)
+    let frame_step_value = 16i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create node with default attributes
+    let node = NodeProto::default();
+    
+    // Execute STFT operation
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step]);
+    
+    // Verify error
+    assert!(matches!(result, Err(OrtError::InvalidTensorData(_))));
+}
+
+#[test]
+fn test_op_stft_invalid_channels() {
+    // Create a signal with invalid number of channels (3)
+    let signal_data: Vec<f32> = (0..64*3).map(|i| (i as f32 * 0.1).sin()).collect();
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 64, 3] (invalid number of channels)
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(64), Dimensions::Fixed(3)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 16)
+    let frame_step_value = 16i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create node with default attributes
+    let node = NodeProto::default();
+    
+    // Execute STFT operation
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step]);
+    
+    // Verify error
+    assert!(matches!(result, Err(OrtError::InvalidTensorData(_))));
+}
+
+#[test]
+fn test_op_stft_complex_onesided() {
+    // Create a complex signal
+    let mut signal_data = Vec::new();
+    for i in 0..32 {
+        signal_data.push((i as f32 * 0.1).sin()); // Real part
+        signal_data.push((i as f32 * 0.1).cos()); // Imaginary part
+    }
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 32, 2]
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(32), Dimensions::Fixed(2)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 8)
+    let frame_step_value = 8i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create node with onesided=true attribute (which is invalid for complex input)
+    let node = NodeProto {
+        attributes: vec![AttributeProto {
+            name: "onesided".to_string(),
+            i: 1, // true
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    
+    // Execute STFT operation
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step]);
+    
+    // Verify error
+    assert!(matches!(result, Err(OrtError::InvalidTensorData(_))));
+}
+
+#[test]
+fn test_op_stft_invalid_frame_step() {
+    // Create a simple signal
+    let signal_data: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 64, 1]
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(64), Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor with non-scalar shape
+    let frame_step_data = vec![16i64, 32];
+    let frame_step_bytes: Vec<u8> = frame_step_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    let frame_step = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(2)],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_bytes),
+    };
+    
+    // Create node with default attributes
+    let node = NodeProto::default();
+    
+    // Execute STFT operation
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step]);
+    
+    // Verify error
+    assert!(matches!(result, Err(OrtError::InvalidTensorData(_))));
+}
+
+#[test]
+fn test_op_stft_mismatched_window() {
+    // Create a simple signal
+    let signal_data: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 64, 1]
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(64), Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 16)
+    let frame_step_value = 16i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create window of length 32
+    let window_data: Vec<f32> = (0..32).map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / 31.0).cos())).collect();
+    let window_bytes: Vec<u8> = window_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create frame_length tensor (scalar value 64, which doesn't match window length)
+    let frame_length_value = 64i64;
+    let frame_length = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_length_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create node with default attributes
+    let node = NodeProto::default();
+    
+    // Create default window tensor of length 32 (ones, simulating no windowing)
+    let window_data: Vec<f32> = vec![1.0f32; 32];
+    let window_bytes: Vec<u8> = window_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    let window = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(32)],
+        dtype: DataType::Float,
+        data: Arc::new(window_bytes),
+    };
+
+    // Execute STFT operation with mismatched window and frame_length
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step, window, frame_length]);
+    
+    // Verify error
+    assert!(matches!(result, Err(OrtError::InvalidTensorData(_))));
+}
+
+#[test]
+fn test_op_stft_nan_signal() {
+    // Create a signal with NaN values
+    let mut signal_data = Vec::new();
+    for i in 0..64 {
+        if i % 10 == 0 {
+            signal_data.push(f32::NAN); // Add some NaN values
+        } else {
+            signal_data.push((i as f32 * 0.1).sin());
+        }
+    }
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [1, 64, 1]
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(1), Dimensions::Fixed(64), Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 16)
+    let frame_step_value = 16i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create node with default attributes
+    let node = NodeProto::default();
+    
+    // Execute STFT operation
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step]).unwrap();
+    
+    // Verify result (should complete without error)
+    match result {
+        OrtValue::Tensor { shape, dtype, .. } => {
+            assert_eq!(dtype, DataType::Float);
+            assert_eq!(shape, vec![Dimensions::Fixed(1), Dimensions::Fixed(1), Dimensions::Fixed(33), Dimensions::Fixed(2)]);
+        },
+        _ => panic!("Expected tensor output"),
+    }
+}
+
+#[test]
+fn test_op_stft_multiple_batches() {
+    // Create a signal with multiple batches
+    let mut signal_data = Vec::new();
+    for b in 0..2 {
+        for i in 0..32 {
+            signal_data.push((i as f32 * 0.1 * (b + 1) as f32).sin());
+        }
+    }
+    let signal_bytes: Vec<u8> = signal_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    // Create signal tensor with shape [2, 32, 1] (2 batches)
+    let signal = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(2), Dimensions::Fixed(32), Dimensions::Fixed(1)],
+        dtype: DataType::Float,
+        data: Arc::new(signal_bytes),
+    };
+    
+    // Create frame_step tensor (scalar value 8)
+    let frame_step_value = 8i64;
+    let frame_step = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_step_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create frame_length tensor (scalar value 16)
+    let frame_length_value = 16i64;
+    let frame_length = OrtValue::Tensor {
+        shape: vec![],
+        dtype: DataType::Int64,
+        data: Arc::new(frame_length_value.to_le_bytes().to_vec()),
+    };
+    
+    // Create node with default attributes
+    let node = NodeProto::default();
+    
+    // Create default window tensor of length 32 (ones, simulating no windowing)
+    let window_data: Vec<f32> = vec![1.0f32; 16];
+    let window_bytes: Vec<u8> = window_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect();
+    
+    let window = OrtValue::Tensor {
+        shape: vec![Dimensions::Fixed(16)],
+        dtype: DataType::Float,
+        data: Arc::new(window_bytes),
+    };
+
+    // Execute STFT operation
+    let result = OrtEngine::op_stft(&node, &[signal, frame_step, window, frame_length]).unwrap();
+    
+    // Verify result
+    match result {
+        OrtValue::Tensor { shape, dtype, .. } => {
+            assert_eq!(dtype, DataType::Float);
+            
+            // For a frame_length of 16 and frame_step of 8, we should have:
+            // - 2 batches
+            // - (32-16)/8 + 1 = 3 frames
+            // - 16/2 + 1 = 9 frequency bins (onesided=true by default)
+            // - 2 channels (real and imaginary parts)
+            assert_eq!(shape, vec![Dimensions::Fixed(2), Dimensions::Fixed(3), Dimensions::Fixed(9), Dimensions::Fixed(2)]);
+        },
+        _ => panic!("Expected tensor output"),
+    }
+}
+
+
+
 }

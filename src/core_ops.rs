@@ -3263,6 +3263,7 @@ match (array1, array2) {
 
     pub fn op_gather(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         // Get the input tensors
+        // println!("{:?}---{:?}",node,inputs);
         let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Gather requires data tensor".to_string()))?;
         let indices = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Gather requires indices tensor".to_string()))?;
     
@@ -3290,7 +3291,7 @@ match (array1, array2) {
         // Convert inputs to ndarrays
         let data_array = ort_to_ndarray(data)?;
         let indices_array = ort_to_ndarray(indices)?;
-    
+        // println!("111111111111111111111111111------------{:?}",indices_array);
         // Get the rank of the input tensor
         let data_rank = input_shape.len() as i64;
     
@@ -3341,7 +3342,7 @@ match (array1, array2) {
         for i in (normalized_axis as usize + 1)..input_shape_vec.len() {
             output_shape.push(input_shape_vec[i]);
         }
-    
+        // println!("1111111111111--------------{:?}--------------{:?}",data_array,indices_array);
         // Perform gather operation based on data type
         match (data_array, indices_array) {
             (ArrayDResult::Float(data_arr), ArrayDResult::Int32(indices_arr)) => {
@@ -3392,6 +3393,349 @@ match (array1, array2) {
                 }
                 
                 Ok(ndarray_to_ort(ArrayDResult::Float(output), input_dtype))
+            },
+            (ArrayDResult::Float(data_arr), ArrayDResult::Int64(indices_arr)) => {
+                let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&output_shape));
+                
+                // Flatten indices for easier iteration
+                let flat_indices = indices_arr.iter().cloned().collect::<Vec<i64>>();
+                let axis_dim = input_shape_vec[normalized_axis as usize];
+                
+                // Iterate over all elements in the output array
+                for (output_idx, output_val) in output.indexed_iter_mut() {
+                    // Calculate the corresponding indices in the input array
+                    let mut input_idx = Vec::with_capacity(input_shape_vec.len());
+                    
+                    // Dimensions before axis
+                    for i in 0..normalized_axis as usize {
+                        input_idx.push(output_idx[i]);
+                    }
+                    
+                    // The axis dimension comes from the indices tensor
+                    // Calculate indices_offset by manually iterating through the dimensions
+                    let mut indices_offset = 0;
+                    for i in 0..indices_shape_vec.len() {
+                        let dim_idx = normalized_axis as usize + i;
+                        if dim_idx < output_idx.ndim() {
+                            indices_offset = indices_offset * indices_shape_vec[i] + output_idx[dim_idx];
+                        }
+                    }
+                    
+                    let index = flat_indices[indices_offset];
+                    
+                    // Check if the index is within bounds
+                    if index < 0 || index as usize >= axis_dim {
+                        return Err(OrtError::InvalidTensorData(
+                            format!("Index {} is out of bounds for dimension {} with size {}", index, normalized_axis, axis_dim).into()
+                        ));
+                    }
+                    
+                    input_idx.push(index as usize);
+                    
+                    // Dimensions after axis
+                    for i in 0..input_shape_vec.len() - (normalized_axis as usize + 1) {
+                        input_idx.push(output_idx[normalized_axis as usize + indices_shape_vec.len() + i]);
+                    }
+                    
+                    // Get the value from the input array
+                    *output_val = data_arr[ndarray::IxDyn(&input_idx)];
+                }
+                
+                Ok(ndarray_to_ort(ArrayDResult::Float(output), input_dtype))
+            },
+            (ArrayDResult::Int32(data_arr), ArrayDResult::Int32(indices_arr)) => {
+                let mut output = ndarray::ArrayD::<i32>::zeros(ndarray::IxDyn(&output_shape));
+                
+                // Flatten indices for easier iteration
+                let flat_indices = indices_arr.iter().cloned().collect::<Vec<i32>>();
+                let axis_dim = input_shape_vec[normalized_axis as usize];
+                
+                // Iterate over all elements in the output array
+                for (output_idx, output_val) in output.indexed_iter_mut() {
+                    // Calculate the corresponding indices in the input array
+                    let mut input_idx = Vec::with_capacity(input_shape_vec.len());
+                    
+                    // Dimensions before axis
+                    for i in 0..normalized_axis as usize {
+                        input_idx.push(output_idx[i]);
+                    }
+                    
+                    // The axis dimension comes from the indices tensor
+                    // Calculate indices_offset by manually iterating through the dimensions
+                    let mut indices_offset = 0;
+                    for i in 0..indices_shape_vec.len() {
+                        let dim_idx = normalized_axis as usize + i;
+                        if dim_idx < output_idx.ndim() {
+                            indices_offset = indices_offset * indices_shape_vec[i] + output_idx[dim_idx];
+                        }
+                    }
+                    
+                    let index = flat_indices[indices_offset];
+                    
+                    // Check if the index is within bounds
+                    if index < 0 || index as usize >= axis_dim {
+                        return Err(OrtError::InvalidTensorData(
+                            format!("Index {} is out of bounds for dimension {} with size {}", index, normalized_axis, axis_dim).into()
+                        ));
+                    }
+                    
+                    input_idx.push(index as usize);
+                    
+                    // Dimensions after axis
+                    for i in 0..input_shape_vec.len() - (normalized_axis as usize + 1) {
+                        input_idx.push(output_idx[normalized_axis as usize + indices_shape_vec.len() + i]);
+                    }
+                    
+                    // Get the value from the input array
+                    *output_val = data_arr[ndarray::IxDyn(&input_idx)];
+                }
+                
+                Ok(ndarray_to_ort(ArrayDResult::Int32(output), input_dtype))
+            },
+            (ArrayDResult::Int32(data_arr), ArrayDResult::Int64(indices_arr)) => {
+                let mut output = ndarray::ArrayD::<i32>::zeros(ndarray::IxDyn(&output_shape));
+                
+                // Flatten indices for easier iteration
+                let flat_indices = indices_arr.iter().cloned().collect::<Vec<i64>>();
+                let axis_dim = input_shape_vec[normalized_axis as usize];
+                
+                // Iterate over all elements in the output array
+                for (output_idx, output_val) in output.indexed_iter_mut() {
+                    // Calculate the corresponding indices in the input array
+                    let mut input_idx = Vec::with_capacity(input_shape_vec.len());
+                    
+                    // Dimensions before axis
+                    for i in 0..normalized_axis as usize {
+                        input_idx.push(output_idx[i]);
+                    }
+                    
+                    // The axis dimension comes from the indices tensor
+                    // Calculate indices_offset by manually iterating through the dimensions
+                    let mut indices_offset = 0;
+                    for i in 0..indices_shape_vec.len() {
+                        let dim_idx = normalized_axis as usize + i;
+                        if dim_idx < output_idx.ndim() {
+                            indices_offset = indices_offset * indices_shape_vec[i] + output_idx[dim_idx];
+                        }
+                    }
+                    
+                    let index = flat_indices[indices_offset];
+                    
+                    // Check if the index is within bounds
+                    if index < 0 || index as usize >= axis_dim {
+                        return Err(OrtError::InvalidTensorData(
+                            format!("Index {} is out of bounds for dimension {} with size {}", index, normalized_axis, axis_dim).into()
+                        ));
+                    }
+                    
+                    input_idx.push(index as usize);
+                    
+                    // Dimensions after axis
+                    for i in 0..input_shape_vec.len() - (normalized_axis as usize + 1) {
+                        input_idx.push(output_idx[normalized_axis as usize + indices_shape_vec.len() + i]);
+                    }
+                    
+                    // Get the value from the input array
+                    *output_val = data_arr[ndarray::IxDyn(&input_idx)];
+                }
+                
+                Ok(ndarray_to_ort(ArrayDResult::Int32(output), input_dtype))
+            },
+            (ArrayDResult::Int64(data_arr), ArrayDResult::Int32(indices_arr)) => {
+                let mut output = ndarray::ArrayD::<i64>::zeros(ndarray::IxDyn(&output_shape));
+                
+                // Flatten indices for easier iteration
+                let flat_indices = indices_arr.iter().cloned().collect::<Vec<i32>>();
+                let axis_dim = input_shape_vec[normalized_axis as usize];
+                
+                // Iterate over all elements in the output array
+                for (output_idx, output_val) in output.indexed_iter_mut() {
+                    // Calculate the corresponding indices in the input array
+                    let mut input_idx = Vec::with_capacity(input_shape_vec.len());
+                    
+                    // Dimensions before axis
+                    for i in 0..normalized_axis as usize {
+                        input_idx.push(output_idx[i]);
+                    }
+                    
+                    // The axis dimension comes from the indices tensor
+                    // Calculate indices_offset by manually iterating through the dimensions
+                    let mut indices_offset = 0;
+                    for i in 0..indices_shape_vec.len() {
+                        let dim_idx = normalized_axis as usize + i;
+                        if dim_idx < output_idx.ndim() {
+                            indices_offset = indices_offset * indices_shape_vec[i] + output_idx[dim_idx];
+                        }
+                    }
+                    
+                    let index = flat_indices[indices_offset];
+                    
+                    // Check if the index is within bounds
+                    if index < 0 || index as usize >= axis_dim {
+                        return Err(OrtError::InvalidTensorData(
+                            format!("Index {} is out of bounds for dimension {} with size {}", index, normalized_axis, axis_dim).into()
+                        ));
+                    }
+                    
+                    input_idx.push(index as usize);
+                    
+                    // Dimensions after axis
+                    for i in 0..input_shape_vec.len() - (normalized_axis as usize + 1) {
+                        input_idx.push(output_idx[normalized_axis as usize + indices_shape_vec.len() + i]);
+                    }
+                    
+                    // Get the value from the input array
+                    *output_val = data_arr[ndarray::IxDyn(&input_idx)];
+                }
+                
+                Ok(ndarray_to_ort(ArrayDResult::Int64(output), input_dtype))
+            },
+            (ArrayDResult::Int64(data_arr), ArrayDResult::Int64(indices_arr)) => {
+                let mut output = ndarray::ArrayD::<i64>::zeros(ndarray::IxDyn(&output_shape));
+                
+                // Flatten indices for easier iteration
+                let flat_indices = indices_arr.iter().cloned().collect::<Vec<i64>>();
+                let axis_dim = input_shape_vec[normalized_axis as usize];
+                
+                // Iterate over all elements in the output array
+                for (output_idx, output_val) in output.indexed_iter_mut() {
+                    // Calculate the corresponding indices in the input array
+                    let mut input_idx = Vec::with_capacity(input_shape_vec.len());
+                    
+                    // Dimensions before axis
+                    for i in 0..normalized_axis as usize {
+                        input_idx.push(output_idx[i]);
+                    }
+                    
+                    // The axis dimension comes from the indices tensor
+                    // Calculate indices_offset by manually iterating through the dimensions
+                    let mut indices_offset = 0;
+                    for i in 0..indices_shape_vec.len() {
+                        let dim_idx = normalized_axis as usize + i;
+                        if dim_idx < output_idx.ndim() {
+                            indices_offset = indices_offset * indices_shape_vec[i] + output_idx[dim_idx];
+                        }
+                    }
+                    
+                    let index = flat_indices[indices_offset];
+                    
+                    // Check if the index is within bounds
+                    if index < 0 || index as usize >= axis_dim {
+                        return Err(OrtError::InvalidTensorData(
+                            format!("Index {} is out of bounds for dimension {} with size {}", index, normalized_axis, axis_dim).into()
+                        ));
+                    }
+                    
+                    input_idx.push(index as usize);
+                    
+                    // Dimensions after axis
+                    for i in 0..input_shape_vec.len() - (normalized_axis as usize + 1) {
+                        input_idx.push(output_idx[normalized_axis as usize + indices_shape_vec.len() + i]);
+                    }
+                    
+                    // Get the value from the input array
+                    *output_val = data_arr[ndarray::IxDyn(&input_idx)];
+                }
+                
+                Ok(ndarray_to_ort(ArrayDResult::Int64(output), input_dtype))
+            },
+            (ArrayDResult::Boolean(data_arr), ArrayDResult::Int32(indices_arr)) => {
+let mut output=ndarray::ArrayD::<bool>::from_elem(ndarray::IxDyn(&output_shape), false);
+                
+                // Flatten indices for easier iteration
+                let flat_indices = indices_arr.iter().cloned().collect::<Vec<i32>>();
+                let axis_dim = input_shape_vec[normalized_axis as usize];
+                
+                // Iterate over all elements in the output array
+                for (output_idx, output_val) in output.indexed_iter_mut() {
+                    // Calculate the corresponding indices in the input array
+                    let mut input_idx = Vec::with_capacity(input_shape_vec.len());
+                    
+                    // Dimensions before axis
+                    for i in 0..normalized_axis as usize {
+                        input_idx.push(output_idx[i]);
+                    }
+                    
+                    // The axis dimension comes from the indices tensor
+                    // Calculate indices_offset by manually iterating through the dimensions
+                    let mut indices_offset = 0;
+                    for i in 0..indices_shape_vec.len() {
+                        let dim_idx = normalized_axis as usize + i;
+                        if dim_idx < output_idx.ndim() {
+                            indices_offset = indices_offset * indices_shape_vec[i] + output_idx[dim_idx];
+                        }
+                    }
+                    
+                    let index = flat_indices[indices_offset];
+                    
+                    // Check if the index is within bounds
+                    if index < 0 || index as usize >= axis_dim {
+                        return Err(OrtError::InvalidTensorData(
+                            format!("Index {} is out of bounds for dimension {} with size {}", index, normalized_axis, axis_dim).into()
+                        ));
+                    }
+                    
+                    input_idx.push(index as usize);
+                    
+                    // Dimensions after axis
+                    for i in 0..input_shape_vec.len() - (normalized_axis as usize + 1) {
+                        input_idx.push(output_idx[normalized_axis as usize + indices_shape_vec.len() + i]);
+                    }
+                    
+                    // Get the value from the input array
+                    *output_val = data_arr[ndarray::IxDyn(&input_idx)];
+                }
+                
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(output), input_dtype))
+            },
+            (ArrayDResult::Boolean(data_arr), ArrayDResult::Int64(indices_arr)) => {
+                let mut output=ndarray::ArrayD::<bool>::from_elem(ndarray::IxDyn(&output_shape), false);
+                
+                // Flatten indices for easier iteration
+                let flat_indices = indices_arr.iter().cloned().collect::<Vec<i64>>();
+                let axis_dim = input_shape_vec[normalized_axis as usize];
+                
+                // Iterate over all elements in the output array
+                for (output_idx, output_val) in output.indexed_iter_mut() {
+                    // Calculate the corresponding indices in the input array
+                    let mut input_idx = Vec::with_capacity(input_shape_vec.len());
+                    
+                    // Dimensions before axis
+                    for i in 0..normalized_axis as usize {
+                        input_idx.push(output_idx[i]);
+                    }
+                    
+                    // The axis dimension comes from the indices tensor
+                    // Calculate indices_offset by manually iterating through the dimensions
+                    let mut indices_offset = 0;
+                    for i in 0..indices_shape_vec.len() {
+                        let dim_idx = normalized_axis as usize + i;
+                        if dim_idx < output_idx.ndim() {
+                            indices_offset = indices_offset * indices_shape_vec[i] + output_idx[dim_idx];
+                        }
+                    }
+                    
+                    let index = flat_indices[indices_offset];
+                    
+                    // Check if the index is within bounds
+                    if index < 0 || index as usize >= axis_dim {
+                        return Err(OrtError::InvalidTensorData(
+                            format!("Index {} is out of bounds for dimension {} with size {}", index, normalized_axis, axis_dim).into()
+                        ));
+                    }
+                    
+                    input_idx.push(index as usize);
+                    
+                    // Dimensions after axis
+                    for i in 0..input_shape_vec.len() - (normalized_axis as usize + 1) {
+                        input_idx.push(output_idx[normalized_axis as usize + indices_shape_vec.len() + i]);
+                    }
+                    
+                    // Get the value from the input array
+                    *output_val = data_arr[ndarray::IxDyn(&input_idx)];
+                }
+                
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(output), input_dtype))
             },
             // Add similar implementations for other data type combinations
             _ => Err(OrtError::TypeMismatch(format!("Unsupported data types for Gather operation"))),
@@ -6809,6 +7153,331 @@ match (x_array, y_array) {
         
     }
 
+
+    // Softmax
+    pub fn op_softmax(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensor
+let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("LogSoftmax requires input tensor".to_string()))?;
+
+// Extract the data type and shape of the input tensor
+let (input_dtype, input_shape) = match data {
+    OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
+    _ => return Err(OrtError::TypeMismatch("Input must be a tensor".to_string())),
+};
+
+// Check that the data type is float
+if input_dtype != DataType::Float {
+    return Err(OrtError::TypeMismatch(format!("LogSoftmax requires float tensor, got {:?}", input_dtype)));
+}
+
+// Get the axis attribute (default is -1)
+let axis = node.attributes.iter()
+    .find(|a| a.name == "axis")
+    .map(|a| a.i)
+    .unwrap_or(-1);
+
+// Convert input to ndarray
+let input_array = match ort_to_ndarray(data)? {
+    ArrayDResult::Float(arr) => arr,
+    _ => return Err(OrtError::TypeMismatch("Input must be a float tensor".to_string())),
+};
+
+// Get the rank of the input tensor
+let rank = input_shape.len() as i64;
+
+// Normalize axis
+let normalized_axis = if axis < 0 { rank + axis } else { axis };
+
+// Validate axis
+if normalized_axis < 0 || normalized_axis >= rank {
+    return Err(OrtError::InvalidTensorData(
+        format!("Axis {} is out of bounds for array of rank {}", axis, rank).into()
+    ));
+}
+
+// Compute LogSoftmax
+let output = match input_array {
+    ref arr => {
+        // Create a new array to store the result
+        let mut result = arr.clone();
+        
+        // Get the shape of the array
+        let shape = arr.shape().to_vec();
+        
+        // Calculate the number of elements along the softmax axis
+        let axis_dim = shape[normalized_axis as usize];
+        
+        // Calculate the number of softmax operations to perform
+        let outer_dim: usize = shape[..normalized_axis as usize].iter().product();
+        let inner_dim: usize = shape[(normalized_axis as usize + 1)..].iter().product();
+        
+        // Reshape to 3D for easier processing: [outer_dim, axis_dim, inner_dim]
+        let reshaped = arr.clone().into_shape((outer_dim, axis_dim, inner_dim))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape array: {:?}", e).into()))?;
+        
+        // Reshape result to 3D as well
+        let mut result_reshaped = result.into_shape((outer_dim, axis_dim, inner_dim))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape result array: {:?}", e).into()))?;
+        
+        // Process each outer and inner dimension
+        for o in 0..outer_dim {
+            for i in 0..inner_dim {
+                // Extract the slice along the softmax axis
+                let slice = reshaped.slice(ndarray::s![o, .., i]);
+                
+                // Find the maximum value in the slice (for numerical stability)
+                let max_val = slice.fold(std::f32::NEG_INFINITY, |a, &b| a.max(b));
+                
+                // Compute exp(x - max) for each element
+                let mut exp_sum = 0.0;
+                for j in 0..axis_dim {
+                    let exp_val = (slice[j] - max_val).exp();
+                    exp_sum += exp_val;
+                }
+                
+                // Compute log(softmax) = (x - max) - log(sum(exp(x - max)))
+                let log_sum_exp = exp_sum.ln();
+                for j in 0..axis_dim {
+                    result_reshaped[[o, j, i]] = slice[j] - max_val - log_sum_exp;
+                }
+            }
+        }
+        
+        // Reshape back to original shape
+        result_reshaped.into_shape(shape)
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape back to original shape: {:?}", e).into()))?
+    }
+};
+
+Ok(ndarray_to_ort(ArrayDResult::Float(output), input_dtype))
+        
+    }
+
+    pub fn op_stft(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+// Get the input tensors
+let signal = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("STFT requires signal tensor".to_string()))?;
+let frame_step = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("STFT requires frame_step tensor".to_string()))?;
+let window = inputs.get(2); // Optional window tensor
+let frame_length = inputs.get(3); // Optional frame_length tensor
+
+// Extract the data type and shape of the input signal tensor
+let (input_dtype, input_shape) = match signal {
+    OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
+    _ => return Err(OrtError::TypeMismatch("Signal input must be a tensor".to_string())),
+};
+
+// Check that the data type is float
+if input_dtype != DataType::Float {
+    return Err(OrtError::TypeMismatch(format!("STFT requires float tensor, got {:?}", input_dtype)));
+}
+
+// Get the onesided attribute (default is 1)
+let onesided = node.attributes.iter()
+    .find(|a| a.name == "onesided")
+    .map(|a| a.i == 1)
+    .unwrap_or(true);
+
+// Convert inputs to ndarrays
+let signal_array = match ort_to_ndarray(signal)? {
+    ArrayDResult::Float(arr) => arr,
+    _ => return Err(OrtError::TypeMismatch("Signal must be a float tensor".to_string())),
+};
+
+// Extract frame_step value
+let frame_step_value = match ort_to_ndarray(frame_step)? {
+    ArrayDResult::Int32(arr) => {
+        if arr.len() != 1 {
+            return Err(OrtError::InvalidTensorData("frame_step must be a scalar".into()));
+        }
+        arr[ndarray::IxDyn(&[])] as usize
+    },
+    ArrayDResult::Int64(arr) => {
+        if arr.len() != 1 {
+            return Err(OrtError::InvalidTensorData("frame_step must be a scalar".into()));
+        }
+        arr[ndarray::IxDyn(&[])] as usize
+    },
+    _ => return Err(OrtError::TypeMismatch("frame_step must be int32 or int64".to_string())),
+};
+
+// Extract window tensor if provided
+let window_array = if let Some(w) = window {
+    match ort_to_ndarray(w)? {
+        ArrayDResult::Float(arr) => {
+            if arr.ndim() != 1 {
+                return Err(OrtError::InvalidTensorData("window must have rank 1".into()));
+            }
+            Some(arr)
+        },
+        _ => return Err(OrtError::TypeMismatch("window must be a float tensor".to_string())),
+    }
+} else {
+    None
+};
+
+// Extract frame_length if provided
+let frame_length_value = if let Some(fl) = frame_length {
+    match ort_to_ndarray(fl)? {
+        ArrayDResult::Int32(arr) => {
+            if arr.len() != 1 {
+                return Err(OrtError::InvalidTensorData("frame_length must be a scalar".into()));
+            }
+            arr[ndarray::IxDyn(&[])] as usize
+        },
+        ArrayDResult::Int64(arr) => {
+            if arr.len() != 1 {
+                return Err(OrtError::InvalidTensorData("frame_length must be a scalar".into()));
+            }
+            arr[ndarray::IxDyn(&[])] as usize
+        },
+        _ => return Err(OrtError::TypeMismatch("frame_length must be int32 or int64".to_string())),
+    }
+} else if let Some(ref w) = window_array {
+    w.len()
+} else {
+    // Default frame_length if neither window nor frame_length is provided
+    signal_array.shape()[1]
+};
+
+// Check signal shape
+if signal_array.ndim() != 3 {
+    return Err(OrtError::InvalidTensorData(
+        format!("Signal must have 3 dimensions [batch_size, signal_length, channels], got {:?}", signal_array.shape()).into()
+    ));
+}
+
+let batch_size = signal_array.shape()[0];
+let signal_length = signal_array.shape()[1];
+let channels = signal_array.shape()[2];
+
+// Check if signal is real or complex
+let is_complex = channels == 2;
+if channels != 1 && channels != 2 {
+    return Err(OrtError::InvalidTensorData(
+        format!("Signal must have 1 (real) or 2 (complex) channels, got {}", channels).into()
+    ));
+}
+
+// If signal is complex and onesided is true, we can't compute onesided FFT
+if is_complex && onesided {
+    return Err(OrtError::InvalidTensorData(
+        "Cannot compute onesided FFT for complex input signal".into()
+    ));
+}
+
+// Create window if not provided
+let window_values = if let Some(w) = window_array {
+    w
+} else {
+    // Default to rectangular window
+ndarray::ArrayD::<f32>::ones(ndarray::IxDyn(&[frame_length_value]))
+};
+
+// Check window length
+if window_values.len() != frame_length_value {
+    return Err(OrtError::InvalidTensorData(
+        format!("Window length ({}) must match frame_length ({})", window_values.len(), frame_length_value).into()
+    ));
+}
+
+// Calculate number of frames
+let frames = (signal_length - frame_length_value) / frame_step_value + 1;
+
+// Calculate number of unique FFT bins for onesided output
+let dft_unique_bins = if onesided {
+    frame_length_value / 2 + 1
+} else {
+    frame_length_value
+};
+
+// Create output array
+let output_shape = [batch_size, frames, dft_unique_bins, 2];
+let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&output_shape));
+
+// Helper function to compute complex multiplication
+let complex_mul = |a_real: f32, a_imag: f32, b_real: f32, b_imag: f32| -> (f32, f32) {
+    (
+        a_real * b_real - a_imag * b_imag,
+        a_real * b_imag + a_imag * b_real
+    )
+};
+
+// Helper function to compute DFT
+let compute_dft = |frame: &[f32], is_complex: bool, frame_length: usize, output: &mut ndarray::ArrayViewMutD<f32>| {
+    let n = frame_length;
+    
+    for k in 0..dft_unique_bins {
+        let mut real_sum = 0.0;
+        let mut imag_sum = 0.0;
+        
+        for t in 0..n {
+            let angle = -2.0 * std::f32::consts::PI * (k as f32) * (t as f32) / (n as f32);
+            let cos_val = angle.cos();
+            let sin_val = angle.sin();
+            
+            if is_complex {
+                let real = frame[t * 2];
+                let imag = frame[t * 2 + 1];
+                let (mul_real, mul_imag) = complex_mul(real, imag, cos_val, sin_val);
+                real_sum += mul_real;
+                imag_sum += mul_imag;
+            } else {
+                real_sum += frame[t] * cos_val;
+                imag_sum += frame[t] * sin_val;
+            }
+        }
+        
+        output[[k, 0]] = real_sum;
+        output[[k, 1]] = imag_sum;
+    }
+};
+
+// Process each batch and frame
+for b in 0..batch_size {
+    for f in 0..frames {
+        let start_idx = f * frame_step_value;
+        let end_idx = start_idx + frame_length_value;
+        
+        if end_idx > signal_length {
+            // Zero-pad if frame extends beyond signal
+            let mut frame = vec![0.0; frame_length_value * channels];
+            let valid_samples = signal_length - start_idx;
+            
+            if is_complex {
+                for i in 0..valid_samples {
+                    frame[i * 2] = signal_array[[b, start_idx + i, 0]] * window_values[i];
+                    frame[i * 2 + 1] = signal_array[[b, start_idx + i, 1]] * window_values[i];
+                }
+            } else {
+                for i in 0..valid_samples {
+                    frame[i] = signal_array[[b, start_idx + i, 0]] * window_values[i];
+                }
+            }
+            
+            compute_dft(&frame, is_complex, frame_length_value, &mut &mut output.slice_mut(ndarray::s![b, f, .., ..]).into_dyn());
+        } else {
+            // Extract frame and apply window
+            let mut frame = vec![0.0; frame_length_value * channels];
+            
+            if is_complex {
+                for i in 0..frame_length_value {
+                    frame[i * 2] = signal_array[[b, start_idx + i, 0]] * window_values[i];
+                    frame[i * 2 + 1] = signal_array[[b, start_idx + i, 1]] * window_values[i];
+                }
+            } else {
+                for i in 0..frame_length_value {
+                    frame[i] = signal_array[[b, start_idx + i, 0]] * window_values[i];
+                }
+            }
+            
+            compute_dft(&frame, is_complex, frame_length_value, &mut output.slice_mut(ndarray::s![b, f, .., ..]).into_dyn());
+        }
+    }
+}
+
+Ok(ndarray_to_ort(ArrayDResult::Float(output), input_dtype))
+        
+    }
 
 
     }

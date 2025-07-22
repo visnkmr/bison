@@ -1256,51 +1256,51 @@ impl OrtEngine {
         self.node_registry.insert("Sub".into(), Self::op_sub);
         self.node_registry.insert("Mul".into(), Self::op_mul);
         self.node_registry.insert("Div".into(), Self::op_div);
-        // self.node_registry.insert("CumSum".into(), Self::op_cumsum);
-        // self.node_registry.insert("Range".into(), Self::op_range);
-        // self.node_registry.insert("Shape".into(), Self::op_shape);
-        // self.node_registry.insert("MatMul".into(), Self::op_matmul);
-        // self.node_registry.insert("Less".into(), Self::op_less);
-        // self.node_registry.insert("Squeeze".into(), Self::op_squeeze);
-        // self.node_registry.insert("STFT".into(), Self::op_stft);
-        // self.node_registry.insert("Slice".into(), Self::op_slice);
+        self.node_registry.insert("CumSum".into(), Self::op_cumsum);
+        self.node_registry.insert("Range".into(), Self::op_range);
+        self.node_registry.insert("Shape".into(), Self::op_shape);
+        self.node_registry.insert("MatMul".into(), Self::op_matmul);
+        self.node_registry.insert("Less".into(), Self::op_less);
+        self.node_registry.insert("Squeeze".into(), Self::op_squeeze);
+        self.node_registry.insert("STFT".into(), Self::op_stft);
+        self.node_registry.insert("Slice".into(), Self::op_slice);
         self.node_registry.insert("Exp".into(), Self::op_exp);
-        // self.node_registry.insert("NonZero".into(), Self::op_nonzero);
+        self.node_registry.insert("NonZero".into(), Self::op_nonzero);
         self.node_registry.insert("Tanh".into(), Self::op_tanh);
         // self.node_registry.insert("LeakyRelu".into(), Self::op_leaky_relu);
-        // self.node_registry.insert("Greater".into(), Self::op_greater);
+        self.node_registry.insert("Greater".into(), Self::op_greater);
         self.node_registry.insert("Sigmoid".into(), Self::op_sigmoid);
-        // self.node_registry.insert("ReduceMean".into(), Self::op_reduce_mean);
+        self.node_registry.insert("ReduceMean".into(), Self::op_reduce_mean);
         self.node_registry.insert("Atan".into(), Self::op_atan);
         self.node_registry.insert("Pow".into(), Self::op_pow);
-        // self.node_registry.insert("Gather".into(), Self::op_gather);
-        // self.node_registry.insert("Softmax".into(), Self::op_softmax);
-        // self.node_registry.insert("Unsqueeze".into(), Self::op_unsqueeze);
-        // self.node_registry.insert("Round".into(), Self::op_round);
+        self.node_registry.insert("Gather".into(), Self::op_gather);
+        self.node_registry.insert("Softmax".into(), Self::op_softmax);
+        self.node_registry.insert("Unsqueeze".into(), Self::op_unsqueeze);
+        self.node_registry.insert("Round".into(), Self::op_round);
         self.node_registry.insert("And".into(), Self::op_and);
-        // self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
-        // self.node_registry.insert("Pad".into(), Self::op_pad);
-        // self.node_registry.insert("Reshape".into(), Self::op_reshape);
-        // self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
-        // self.node_registry.insert("Where".into(), Self::op_where);
+        self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
+        self.node_registry.insert("Pad".into(), Self::op_pad);
+        self.node_registry.insert("Reshape".into(), Self::op_reshape);
+        self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
+        self.node_registry.insert("Where".into(), Self::op_where);
         self.node_registry.insert("Sin".into(), Self::op_sin);
-        // self.node_registry.insert("LSTM".into(), Self::op_lstm);
-        // self.node_registry.insert("ReduceSum".into(), Self::op_reduce_sum);
-        // self.node_registry.insert("Clip".into(), Self::op_clip);
-        // self.node_registry.insert("Resize".into(), Self::op_resize);
-        // self.node_registry.insert("Floor".into(), Self::op_floor);
+        self.node_registry.insert("LSTM".into(), Self::op_lstm);
+        self.node_registry.insert("ReduceSum".into(), Self::op_reduce_sum);
+        self.node_registry.insert("Clip".into(), Self::op_clip);
+        self.node_registry.insert("Resize".into(), Self::op_resize);
+        self.node_registry.insert("Floor".into(), Self::op_floor);
         self.node_registry.insert("Cos".into(), Self::op_cos);
-        // self.node_registry.insert("Concat".into(), Self::op_concat);
+        self.node_registry.insert("Concat".into(), Self::op_concat);
         self.node_registry.insert("Cast".into(), Self::op_cast);
-        // self.node_registry.insert("Transpose".into(), Self::op_transpose);
-        // self.node_registry.insert("Equal".into(), Self::op_equal);
-        // self.node_registry.insert("ConstantOfShape".into(), Self::op_constant_of_shape);
-        // self.node_registry.insert("GreaterOrEqual".into(), Self::op_greater_or_equal);
-        // self.node_registry.insert("Sqrt".into(), Self::op_sqrt);
-        // self.node_registry.insert("Expand".into(), Self::op_expand);
-        // self.node_registry.insert("Conv".into(), Self::op_conv);
-        // self.node_registry.insert("LayerNormalization".into(), Self::op_layer_normalization);
-        // self.node_registry.insert("Gemm".into(), Self::op_gemm);
+        self.node_registry.insert("Transpose".into(), Self::op_transpose);
+        self.node_registry.insert("Equal".into(), Self::op_equal);
+        self.node_registry.insert("ConstantOfShape".into(), Self::op_constant_of_shape);
+        self.node_registry.insert("GreaterOrEqual".into(), Self::op_greater_or_equal);
+        self.node_registry.insert("Sqrt".into(), Self::op_sqrt);
+        self.node_registry.insert("Expand".into(), Self::op_expand);
+        self.node_registry.insert("Conv".into(), Self::op_conv);
+        self.node_registry.insert("LayerNormalization".into(), Self::op_layer_normalization);
+        self.node_registry.insert("Gemm".into(), Self::op_gemm);
         
         // // BERT-specific operators
         // self.node_registry.insert("Erf".into(), Self::op_erf);
@@ -1318,7 +1318,7 @@ impl OrtEngine {
         // self.node_registry.insert("Embedding".into(), Self::op_embedding);
         // self.node_registry.insert("ConstantOfShapeInt64".into(), Self::op_constant_of_shape_int64);
         // self.node_registry.insert("LayerNormalizationWithEpsilon".into(), Self::op_layer_normalization_with_epsilon);
-        // self.node_registry.insert("Expand".into(), Self::op_expand);
+        self.node_registry.insert("Expand".into(), Self::op_expand);
         // self.node_registry.insert("PositionEmbeddings".into(), Self::op_position_embeddings);
         // self.node_registry.insert("TokenTypeEmbeddings".into(), Self::op_token_type_embeddings);
         // self.node_registry.insert("BertAttention".into(), Self::op_bert_attention);
@@ -1341,17 +1341,17 @@ impl OrtEngine {
         // self.node_registry.insert("MapHasKey".into(), Self::op_map_has_key);
         // self.node_registry.insert("MapKeys".into(), Self::op_map_keys);
         
-        // // Control flow operators (improved)
+        // Control flow operators (improved)
         
         
-        // // Other operators
-        // self.node_registry.insert("CumSum".into(), Self::op_cumsum);
-        // self.node_registry.insert("NonZero".into(), Self::op_nonzero);
-        // self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
-        // self.node_registry.insert("Conv".into(), Self::op_conv);
-        // self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
-        // self.node_registry.insert("LSTM".into(), Self::op_lstm);
-        // self.node_registry.insert("STFT".into(), Self::op_stft);
+        // Other operators
+        self.node_registry.insert("CumSum".into(), Self::op_cumsum);
+        self.node_registry.insert("NonZero".into(), Self::op_nonzero);
+        self.node_registry.insert("ScatterND".into(), Self::op_scatter_nd);
+        self.node_registry.insert("Conv".into(), Self::op_conv);
+        self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose);
+        self.node_registry.insert("LSTM".into(), Self::op_lstm);
+        self.node_registry.insert("STFT".into(), Self::op_stft);
         // self.node_registry.insert("Resize".into(), Self::op_resize);
     }
     pub fn infer(&self, inputs: HashMap<String, OrtValue>) -> OrtResult<HashMap<String, OrtValue>> {
@@ -1410,6 +1410,10 @@ impl OrtEngine {
             let node_inputs: Vec<OrtValue> = node_inputs.into_iter().flatten().collect();
     
             let output = if let Some(op) = self.node_registry.get(&node.op_type) {
+                // if node.op_type == "Gather"{
+                
+                //     println!("{:?}---{:?}",node,node_inputs);
+                // }
                 op(node, &node_inputs)?
             // } else if node.op_type == "If" {
             //     self.op_if(node, &node_inputs)?
@@ -1714,9 +1718,9 @@ pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
 }
 
 fn main() -> Result<()> {
-     print_model_info("./kokoro-v1.0.onnx")?;
-    let engine = OrtEngine::new("./corrected_add_model_i16.onnx")?;
-    // let engine = OrtEngine::new("./kokoro-v1.0-simplified.onnx")?;
+    //  print_model_info("./kokoro-v1.0.onnx")?;
+    // let engine = OrtEngine::new("./corrected_add_model_i16.onnx")?;
+    let engine = OrtEngine::new("./kokoro-v1.0-simplified.onnx")?;
     // let graph=engine.model.graph.unwrap();
     // println!("{}",graph.initializer.len());
     // for i in graph.initializer{
@@ -1815,9 +1819,9 @@ let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
 
     // Create input HashMap
     let mut inputs = HashMap::new();
-    // inputs.insert("tokens".to_string(), tokens_tensor);
-    // inputs.insert("style".to_string(), style_tensor);
-    // inputs.insert("speed".to_string(), speed_tensor);
+    inputs.insert("tokens".to_string(), tokens_tensor);
+    inputs.insert("style".to_string(), style_tensor);
+    inputs.insert("speed".to_string(), speed_tensor);
 
 
 // ------------------------------------------------------------------------
@@ -1842,7 +1846,7 @@ let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
     
     // // Process outputs
     println!("Inference complete. Outputs:");
-    match outputs.get("C") {
+    match outputs.get("audio") {
                 Some(a) => {
                     println!("{}",a);
                     // let a=a;

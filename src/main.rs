@@ -1267,7 +1267,7 @@ impl OrtEngine {
         self.node_registry.insert("Exp".into(), Self::op_exp);
         self.node_registry.insert("NonZero".into(), Self::op_nonzero);
         self.node_registry.insert("Tanh".into(), Self::op_tanh);
-        // self.node_registry.insert("LeakyRelu".into(), Self::op_leaky_relu);
+        self.node_registry.insert("LeakyRelu".into(), Self::op_leaky_relu);
         self.node_registry.insert("Greater".into(), Self::op_greater);
         self.node_registry.insert("Sigmoid".into(), Self::op_sigmoid);
         self.node_registry.insert("ReduceMean".into(), Self::op_reduce_mean);

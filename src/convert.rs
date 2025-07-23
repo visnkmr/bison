@@ -621,11 +621,14 @@ pub fn ndarray_to_ort(array: ArrayDResult, dtype: DataType) -> OrtValue {
             
         },
                     };
-    OrtValue::Tensor {
+    let result=OrtValue::Tensor {
         shape,
         dtype,
         data: Arc::new(data),
-    }
+    };
+    println!("Outut-->====={:?}",result);
+    // println!("Outut-->datatype====={:?}========shape====={:?}",shape,dtype);
+    result
 }
 
 // Specialized version for f32 for backward compatibility
@@ -648,7 +651,7 @@ pub fn ndarray_to_ort_f32(array: ArrayD<f32>) -> OrtValue {
 
 // Helper function to convert OrtValue to ndarray of appropriate type
 pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
-    println!("{:?}", ort);
+    // println!("{:?}", ort);
     match ort {
         OrtValue::Tensor { shape, dtype, data, .. } => {
             // Check if shape contains symbolic dimensions
@@ -659,8 +662,8 @@ pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
                 Dimensions::Fixed(n) => *n,
                 Dimensions::Symbolic(_) => unreachable!(), // Handled above
             }).collect();
-
-            match dtype {
+            // println!("Input-->datatype====={:?}========shape====={:?}",shape,dtype);
+            let result = match dtype {
                 DataType::Float => {
                     let float_data: Vec<f32> = data
                         .chunks(4)
@@ -698,8 +701,12 @@ pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
                         .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for boolean tensor".into()))
                     
                 }
+                
                 _ => Err(OrtError::TypeMismatch("Unsupported tensor type, expected Float, Int64, or Int32".to_string())),
-            }
+            };
+            println!("Input-->====={:?}",result);
+            println!("Input-->datatype====={:?}========shape====={:?}",shape,dtype);
+            result
         }
         _ => Err(OrtError::TypeMismatch("Expected tensor".to_string())),
     }
@@ -3474,6 +3481,981 @@ fn test_op_stft_multiple_batches() {
     }
 }
 
+#[test]
+fn test_op_layer_normalization_basic() {
+    // Create a basic input tensor [1, 3, 4]
+    let input_data = vec![
+        1.0f32, 2.0, 3.0, 4.0,  // first row
+        5.0, 6.0, 7.0, 8.0,     // second row
+        9.0, 10.0, 11.0, 12.0   // third row
+    ];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1, 3, 4],
+        DataType::Float,
+    );
+    
+    // Create scale tensor [4]
+    let scale_data = vec![1.0f32, 1.0, 1.0, 1.0];
+    let scale = create_ort_tensor(
+        scale_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create bias tensor [4]
+    let bias_data = vec![0.0f32, 0.0, 0.0, 0.0];
+    let bias = create_ort_tensor(
+        bias_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create node with axis=2 (normalize along last dimension)
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 2,
+        ..Default::default()
+    }];
+    
+    // Execute layer normalization
+    let result = OrtEngine::op_layer_normalization(&node, &[input, scale, bias]).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // For each row, the mean should be approximately 0 and std dev approximately 1
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[1, 3, 4]);
+            
+            // Check each row
+            for i in 0..3 {
+                let row: Vec<f32> = (0..4).map(|j| arr[[0, i, j]]).collect();
+                
+                // Calculate mean and std dev
+                let mean: f32 = row.iter().sum::<f32>() / 4.0;
+                let var: f32 = row.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / 4.0;
+                let std_dev = var.sqrt();
+                
+                // Mean should be close to 0
+                assert!((mean).abs() < 1e-5, "Mean for row {} is {}, not close to 0", i, mean);
+                
+                // Std dev should be close to 1
+                assert!((std_dev - 1.0).abs() < 1e-5, "Std dev for row {} is {}, not close to 1", i, std_dev);
+            }
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_layer_normalization_with_scale_bias() {
+    // Create input tensor [1, 2, 3]
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1, 2, 3],
+        DataType::Float,
+    );
+    
+    // Create scale tensor [3] with non-unit values
+    let scale_data = vec![2.0f32, 0.5, 1.5];
+    let scale = create_ort_tensor(
+        scale_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Float,
+    );
+    
+    // Create bias tensor [3] with non-zero values
+    let bias_data = vec![0.1f32, -0.2, 0.3];
+    let bias = create_ort_tensor(
+        bias_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Float,
+    );
+    
+    // Create node with axis=2
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 2,
+        ..Default::default()
+    }];
+    
+    // Execute layer normalization
+    let result = OrtEngine::op_layer_normalization(&node, &[input, scale, bias]).unwrap();
+    
+    // Verify the result has correct shape and type
+    match result.clone() {
+        OrtValue::Tensor { shape, dtype, .. } => {
+            assert_eq!(shape, vec![Dimensions::Fixed(1), Dimensions::Fixed(2), Dimensions::Fixed(3)]);
+            assert_eq!(dtype, DataType::Float);
+        },
+        _ => panic!("Expected tensor output"),
+    }
+    
+    // Convert to ndarray and check values
+    let result_array = ort_to_ndarray(&result).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            // For first row [1,2,3], normalized with mean=2, std=1, then scaled and biased:
+            // [-1.73*2+0.1, 0*0.5-0.2, 1.73*1.5+0.3] ≈ [-3.36, -0.2, 2.9]
+            // For second row [4,5,6], normalized with mean=5, std=1, then scaled and biased:
+            // [-1.73*2+0.1, 0*0.5-0.2, 1.73*1.5+0.3] ≈ [-3.36, -0.2, 2.9]
+            
+            // Check first row values (approximately)
+            let expected_row1 = vec![-3.36, -0.2, 2.9];
+            for (j, expected) in expected_row1.iter().enumerate() {
+                assert!((arr[[0, 0, j]] - expected).abs() < 0.1, 
+                        "Value at [0,0,{}] is {}, expected around {}", j, arr[[0, 0, j]], expected);
+            }
+            
+            // Check second row values (approximately)
+            let expected_row2 = vec![-3.36, -0.2, 2.9];
+            for (j, expected) in expected_row2.iter().enumerate() {
+                assert!((arr[[0, 1, j]] - expected).abs() < 0.1, 
+                        "Value at [0,1,{}] is {}, expected around {}", j, arr[[0, 1, j]], expected);
+            }
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_layer_normalization_different_axis() {
+    // Create input tensor [2, 3, 2]
+    let input_data = vec![
+        1.0f32, 2.0,  // [0,0,:]
+        3.0, 4.0,     // [0,1,:]
+        5.0, 6.0,     // [0,2,:]
+        7.0, 8.0,     // [1,0,:]
+        9.0, 10.0,    // [1,1,:]
+        11.0, 12.0    // [1,2,:]
+    ];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3, 2],
+        DataType::Float,
+    );
+    
+    // Create scale tensor [3] - normalizing along axis 1
+    let scale_data = vec![1.0f32, 1.0, 1.0];
+    let scale = create_ort_tensor(
+        scale_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Float,
+    );
+    
+    // Create bias tensor [3]
+    let bias_data = vec![0.0f32, 0.0, 0.0];
+    let bias = create_ort_tensor(
+        bias_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Float,
+    );
+    
+    // Create node with axis=1
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 1,
+        ..Default::default()
+    }];
+    
+    // Execute layer normalization
+    let result = OrtEngine::op_layer_normalization(&node, &[input, scale, bias]).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[2, 3, 2]);
+            
+            // For each batch, check that the mean across the normalized dimension is ~0
+            // and std dev is ~1
+            for batch in 0..2 {
+                let values: Vec<f32> = (0..3).flat_map(|i| {
+                    let arr_ref = &arr;
+                    (0..2).map(move |j| arr_ref[[batch, i, j]])
+                }).collect();
+                
+                let mean: f32 = values.iter().sum::<f32>() / 6.0;
+                let var: f32 = values.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / 6.0;
+                let std_dev = var.sqrt();
+                
+                assert!((mean).abs() < 1e-5, "Mean for batch {} is {}, not close to 0", batch, mean);
+                assert!((std_dev - 1.0).abs() < 1e-5, "Std dev for batch {} is {}, not close to 1", batch, std_dev);
+            }
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_layer_normalization_epsilon() {
+    // Create input with a constant row to test epsilon
+    let input_data = vec![5.0f32, 5.0, 5.0, 5.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1, 1, 4],
+        DataType::Float,
+    );
+    
+    // Create scale tensor [4]
+    let scale_data = vec![1.0f32, 1.0, 1.0, 1.0];
+    let scale = create_ort_tensor(
+        scale_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create bias tensor [4]
+    let bias_data = vec![0.0f32, 0.0, 0.0, 0.0];
+    let bias = create_ort_tensor(
+        bias_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create node with axis=2 and epsilon=0.01
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "axis".to_string(),
+            i: 2,
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "epsilon".to_string(),
+            f: 0.01,
+            ..Default::default()
+        }
+    ];
+    
+    // Execute layer normalization
+    let result = OrtEngine::op_layer_normalization(&node, &[input, scale, bias]).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            // For constant input, output should be all zeros
+            for i in 0..4 {
+                assert!((arr[[0, 0, i]]).abs() < 1e-5, "Value at [0,0,{}] is {}, expected 0", i, arr[[0, 0, i]]);
+            }
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_layer_normalization_invalid_inputs() {
+    // Create input tensor [1, 3, 4]
+    let input_data = vec![1.0f32; 12];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1, 3, 4],
+        DataType::Float,
+    );
+    
+    // Create scale tensor with wrong shape [3] (should be [4])
+    let scale_data = vec![1.0f32, 1.0, 1.0];
+    let scale = create_ort_tensor(
+        scale_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Float,
+    );
+    
+    // Create bias tensor [4]
+    let bias_data = vec![0.0f32, 0.0, 0.0, 0.0];
+    let bias = create_ort_tensor(
+        bias_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create node with axis=2
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 2,
+        ..Default::default()
+    }];
+    
+    // Execute layer normalization - should fail due to mismatched scale shape
+    let result = OrtEngine::op_layer_normalization(&node, &[input, scale, bias]);
+    assert!(result.is_err());
+    
+    // Test with invalid axis
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 10, // Out of bounds
+        ..Default::default()
+    }];
+    
+    // Create proper scale tensor [4]
+    let scale_data = vec![1.0f32, 1.0, 1.0, 1.0];
+    let scale = create_ort_tensor(
+        scale_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create input tensor [1, 3, 4]
+    let input_data = vec![1.0f32; 12];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1, 3, 4],
+        DataType::Float,
+    );
+    
+    // Create scale tensor with wrong shape [3] (should be [4])
+    let scale_data = vec![1.0f32, 1.0, 1.0];
+    let scale = create_ort_tensor(
+        scale_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3],
+        DataType::Float,
+    );
+    
+    // Create bias tensor [4]
+    let bias_data = vec![0.0f32, 0.0, 0.0, 0.0];
+    let bias = create_ort_tensor(
+        bias_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create node with axis=2
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 2,
+        ..Default::default()
+    }];
+
+    // Execute layer normalization - should fail due to invalid axis
+    let result = OrtEngine::op_layer_normalization(&node, &[input, scale, bias]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_op_layer_normalization_stacked_dimensions() {
+    // Create input tensor [2, 2, 2, 3]
+    let input_data = vec![
+        1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0,       // [0,0,:,:]
+        7.0, 8.0, 9.0, 10.0, 11.0, 12.0,       // [0,1,:,:]
+        13.0, 14.0, 15.0, 16.0, 17.0, 18.0,    // [1,0,:,:]
+        19.0, 20.0, 21.0, 22.0, 23.0, 24.0     // [1,1,:,:]
+    ];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 2, 2, 3],
+        DataType::Float,
+    );
+    
+    // Create scale tensor [6] for stacked dimensions (2*3=6)
+    let scale_data = vec![1.0f32, 1.0, 1.0, 1.0, 1.0, 1.0];
+    let scale = create_ort_tensor(
+        scale_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![6],
+        DataType::Float,
+    );
+    
+    // Create bias tensor [6]
+    let bias_data = vec![0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let bias = create_ort_tensor(
+        bias_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![6],
+        DataType::Float,
+    );
+    
+    // Create node with axis=2 (normalize along last two dimensions)
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "axis".to_string(),
+        i: 2,
+        ..Default::default()
+    }];
+    
+    // Execute layer normalization
+    let result = OrtEngine::op_layer_normalization(&node, &[input, scale, bias]).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[2, 2, 2, 3]);
+            
+            // Check that each [batch, channel, :, :] group is normalized
+            for batch in 0..2 {
+                for channel in 0..2 {
+let values: Vec<f32> = (0..2).flat_map(|i| {
+                        let arr_ref = &arr;
+                        (0..3).map(move |j| arr_ref[[batch, channel, i, j]])
+                    }).collect();
+                    
+                    let mean: f32 = values.iter().sum::<f32>() / 6.0;
+                    let var: f32 = values.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / 6.0;
+                    let std_dev = var.sqrt();
+                    
+                    assert!((mean).abs() < 1e-5, 
+                            "Mean for [batch={}, channel={}] is {}, not close to 0", batch, channel, mean);
+                    assert!((std_dev - 1.0).abs() < 1e-5, 
+                            "Std dev for [batch={}, channel={}] is {}, not close to 1", batch, channel, std_dev);
+                }
+            }
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_gather_basic() {
+    // Test basic gather operation with a 1D tensor
+    let data = vec![10.0f32, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
+    let data_tensor = create_ort_tensor(
+        data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![7],
+        DataType::Float,
+    );
+    
+    let indices = vec![2i64];
+    let indices_tensor = create_ort_tensor(
+        indices.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto {
+        attributes: vec![AttributeProto {
+            name: "axis".to_string(),
+            i: 0,
+            s: vec![],
+            ints: vec![],
+            t: None,
+            f: 0.0,
+            floats: vec![],
+            g: None,
+            strings: vec![],
+        }],
+        ..Default::default()
+    };
+    
+    let inputs = vec![data_tensor, indices_tensor];
+    let result = OrtEngine::op_gather(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[1]);
+            assert_eq!(arr[ndarray::IxDyn(&[0])], 30.0);
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_gather_multidimensional() {
+    // Test gather with multidimensional data
+    let data = vec![
+        1.0f32, 2.0, 3.0, 4.0,
+        5.0, 6.0, 7.0, 8.0,
+        9.0, 10.0, 11.0, 12.0
+    ];
+    let data_tensor = create_ort_tensor(
+        data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3, 4],
+        DataType::Float,
+    );
+    
+    let indices = vec![0i64, 2];
+    let indices_tensor = create_ort_tensor(
+        indices.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto {
+        attributes: vec![AttributeProto {
+            name: "axis".to_string(),
+            i: 0,
+            s: vec![],
+            ints: vec![],
+            t: None,
+            f: 0.0,
+            floats: vec![],
+            g: None,
+            strings: vec![],
+        }],
+        ..Default::default()
+    };
+    
+    let inputs = vec![data_tensor, indices_tensor];
+    let result = OrtEngine::op_gather(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[2, 4]);
+            assert_eq!(arr[[0, 0]], 1.0);
+            assert_eq!(arr[[0, 3]], 4.0);
+            assert_eq!(arr[[1, 0]], 9.0);
+            assert_eq!(arr[[1, 3]], 12.0);
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_gather_negative_axis() {
+    // Test gather with negative axis
+    let data = vec![
+        1.0f32, 2.0, 3.0,
+        4.0, 5.0, 6.0
+    ];
+    let data_tensor = create_ort_tensor(
+        data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3],
+        DataType::Float,
+    );
+    
+    let indices = vec![1i64, 2];
+    let indices_tensor = create_ort_tensor(
+        indices.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto {
+        attributes: vec![AttributeProto {
+            name: "axis".to_string(),
+            i: -1, // Last dimension
+            s: vec![],
+            ints: vec![],
+            t: None,
+            f: 0.0,
+            floats: vec![],
+            g: None,
+            strings: vec![],
+        }],
+        ..Default::default()
+    };
+    
+    let inputs = vec![data_tensor, indices_tensor];
+    let result = OrtEngine::op_gather(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[2, 2]);
+            assert_eq!(arr[[0, 0]], 2.0);
+            assert_eq!(arr[[0, 1]], 3.0);
+            assert_eq!(arr[[1, 0]], 5.0);
+            assert_eq!(arr[[1, 1]], 6.0);
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_gather_int32_data() {
+    // Test gather with int32 data
+    let data = vec![10i32, 20, 30, 40, 50];
+    let data_tensor = create_ort_tensor(
+        data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![5],
+        DataType::Int32,
+    );
+    
+    let indices = vec![1i64, 3];
+    let indices_tensor = create_ort_tensor(
+        indices.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    
+    let inputs = vec![data_tensor, indices_tensor];
+    let result = OrtEngine::op_gather(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    match result_array {
+        ArrayDResult::Int32(arr) => {
+            assert_eq!(arr.shape(), &[2]);
+            assert_eq!(arr[ndarray::IxDyn(&[0])], 20);
+            assert_eq!(arr[ndarray::IxDyn(&[1])], 40);
+        },
+        _ => panic!("Expected int32 array"),
+    }
+}
+
+#[test]
+fn test_op_gather_multidimensional_indices() {
+    // Test gather with multidimensional indices
+    let data = vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+    let data_tensor = create_ort_tensor(
+        data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![8],
+        DataType::Float,
+    );
+    
+    let indices = vec![
+        0i64, 2,
+        1, 5,
+        7, 6
+    ];
+    let indices_tensor = create_ort_tensor(
+        indices.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3, 2],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    
+    let inputs = vec![data_tensor, indices_tensor];
+    let result = OrtEngine::op_gather(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[3, 2]);
+            assert_eq!(arr[[0, 0]], 0.0);
+            assert_eq!(arr[[0, 1]], 2.0);
+            assert_eq!(arr[[1, 0]], 1.0);
+            assert_eq!(arr[[1, 1]], 5.0);
+            assert_eq!(arr[[2, 0]], 7.0);
+            assert_eq!(arr[[2, 1]], 6.0);
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_basic() {
+    // Test basic cumsum operation along default axis
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    let axis_data = vec![0i64];
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    let expected = ArrayD::from_shape_vec(IxDyn(&[4]), vec![1.0f32, 3.0, 6.0, 10.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_2d_axis_0() {
+    // Test cumsum on 2D tensor along axis 0
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3],
+        DataType::Float,
+    );
+    
+    let axis_data = vec![0i64];
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    let expected = ArrayD::from_shape_vec(IxDyn(&[2, 3]), vec![1.0f32, 2.0, 3.0, 6.0, 7.0, 9.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_2d_axis_1() {
+    // Test cumsum on 2D tensor along axis 1
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3],
+        DataType::Float,
+    );
+    
+    let axis_data = vec![1i64];
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    let expected = ArrayD::from_shape_vec(IxDyn(&[2, 3]), vec![1.0f32, 3.0, 6.0, 4.0, 9.0, 15.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_negative_axis() {
+    // Test cumsum with negative axis
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3],
+        DataType::Float,
+    );
+    
+    let axis_data = vec![-1i64]; // Last axis (equivalent to axis 1)
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    let expected = ArrayD::from_shape_vec(IxDyn(&[2, 3]), vec![1.0f32, 3.0, 6.0, 4.0, 9.0, 15.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_exclusive() {
+    // Test cumsum with exclusive=1
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    let axis_data = vec![0i64];
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "exclusive".to_string(),
+        i: 1,
+        ..Default::default()
+    }];
+    
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    let expected = ArrayD::from_shape_vec(IxDyn(&[4]), vec![0.0f32, 1.0, 3.0, 6.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_reverse() {
+    // Test cumsum with reverse=1
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    let axis_data = vec![0i64];
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "reverse".to_string(),
+        i: 1,
+        ..Default::default()
+    }];
+    
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    let expected = ArrayD::from_shape_vec(IxDyn(&[4]), vec![10.0f32, 9.0, 7.0, 4.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_exclusive_reverse() {
+    // Test cumsum with both exclusive=1 and reverse=1
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    let axis_data = vec![0i64];
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "exclusive".to_string(),
+            i: 1,
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "reverse".to_string(),
+            i: 1,
+            ..Default::default()
+        }
+    ];
+    
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    let expected = ArrayD::from_shape_vec(IxDyn(&[4]), vec![9.0f32, 7.0, 4.0, 0.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_int32() {
+    // Test cumsum with int32 data
+    let input_data = vec![1i32, 2, 3, 4];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Int32,
+    );
+    
+    let axis_data = vec![0i64];
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    let expected = ArrayD::from_shape_vec(IxDyn(&[4]), vec![1i32, 3, 6, 10]).unwrap();
+    match result_array {
+        ArrayDResult::Int32(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected int32 array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_int64() {
+    // Test cumsum with int64 data
+    let input_data = vec![1i64, 2, 3, 4];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Int64,
+    );
+    
+    let axis_data = vec![0i64];
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    let expected = ArrayD::from_shape_vec(IxDyn(&[4]), vec![1i64, 3, 6, 10]).unwrap();
+    match result_array {
+        ArrayDResult::Int64(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected int64 array"),
+    }
+}
+
+#[test]
+fn test_op_cumsum_3d_tensor() {
+    // Test cumsum on 3D tensor
+    let input_data: Vec<f32> = (1..=24).map(|x| x as f32).collect();
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3, 4],
+        DataType::Float,
+    );
+    
+    let axis_data = vec![1i64]; // Middle dimension
+    let axis = create_ort_tensor(
+        axis_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    let inputs = vec![input, axis];
+    let result = OrtEngine::op_cumsum(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected result: cumsum along axis 1
+    let expected = ArrayD::from_shape_vec(
+        IxDyn(&[2, 3, 4]),
+        vec![
+            1.0, 2.0, 3.0, 4.0,
+            6.0, 8.0, 10.0, 12.0,
+            15.0, 18.0, 21.0, 24.0,
+            
+            13.0, 14.0, 15.0, 16.0,
+            30.0, 32.0, 34.0, 36.0,
+            51.0, 54.0, 57.0, 60.0
+        ]
+    ).unwrap();
+    
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
 
 
 }

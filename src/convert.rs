@@ -626,7 +626,7 @@ pub fn ndarray_to_ort(array: ArrayDResult, dtype: DataType) -> OrtValue {
         dtype,
         data: Arc::new(data),
     };
-    println!("Outut-->====={:?}",result);
+    // println!("Outut-->====={:?}",result);
     // println!("Outut-->datatype====={:?}========shape====={:?}",shape,dtype);
     result
 }
@@ -704,8 +704,8 @@ pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
                 
                 _ => Err(OrtError::TypeMismatch("Unsupported tensor type, expected Float, Int64, or Int32".to_string())),
             };
-            println!("Input-->====={:?}",result);
-            println!("Input-->datatype====={:?}========shape====={:?}",shape,dtype);
+            // println!("Input-->====={:?}",result);
+            // println!("Input-->datatype====={:?}========shape====={:?}",shape,dtype);
             result
         }
         _ => Err(OrtError::TypeMismatch("Expected tensor".to_string())),
@@ -4455,6 +4455,240 @@ fn test_op_cumsum_3d_tensor() {
         ArrayDResult::Float(arr) => assert_eq!(arr, expected),
         _ => panic!("Expected float array"),
     }
+}
+
+
+#[test]
+fn test_op_resize_with_scales() {
+    // Create a simple 2D input tensor
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1, 2, 2, 1],
+        DataType::Float,
+    );
+    
+    // Create scales tensor (scale by 2x in height and width)
+    let scales_data = vec![1.0f32, 1.0, 2.0, 2.0];
+    let scales = create_ort_tensor(
+        scales_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create empty ROI tensor
+    let roi_data: Vec<f32> = vec![];
+    let roi = create_ort_tensor(
+        roi_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![0],
+        DataType::Float,
+    );
+    
+    // Create node with nearest mode
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "mode".to_string(),
+            s: "nearest".as_bytes().to_vec(),
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "coordinate_transformation_mode".to_string(),
+            s: "half_pixel".as_bytes().to_vec(),
+            ..Default::default()
+        }
+    ];
+    
+    // Execute resize operation
+    let inputs = vec![input, roi, scales];
+    let result = OrtEngine::op_resize(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected output shape: [1, 2, 4, 2] (2x scaling in height and width)
+    // Expected values: nearest neighbor interpolation of the input
+    let expected = ArrayD::from_shape_vec(
+        IxDyn(&[1, 2, 4, 2]),
+        vec![1.0f32, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0, 4.0]
+    ).unwrap();
+    
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            // assert_eq!(arr.shape(), &[1, 2, 4, 2]);
+            // // Check a few key values
+            // assert_eq!(arr[[0, 0, 0, 0]], 1.0);
+            // assert_eq!(arr[[0, 0, 1, 1]], 1.0);
+            // assert_eq!(arr[[0, 1, 2, 0]], 3.0);
+            // assert_eq!(arr[[0, 1, 3, 1]], 4.0);
+            assert_eq!(arr, expected);
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_resize_with_sizes() {
+    // Create a simple 2D input tensor
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1, 1, 2, 2],
+        DataType::Float,
+    );
+    
+    // Create empty ROI tensor
+    let roi_data: Vec<f32> = vec![];
+    let roi = create_ort_tensor(
+        roi_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![0],
+        DataType::Float,
+    );
+    
+    // Create sizes tensor
+    let sizes_data = vec![1i64, 1, 3, 3];
+    let sizes = create_ort_tensor(
+        sizes_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Int64,
+    );
+    
+    // Create node with bilinear mode
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "mode".to_string(),
+            s: "linear".as_bytes().to_vec(),
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "coordinate_transformation_mode".to_string(),
+            s: "align_corners".as_bytes().to_vec(),
+            ..Default::default()
+        }
+    ];
+    
+    // Execute resize operation
+    let inputs = vec![input, roi, sizes];
+    let result = OrtEngine::op_resize(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected output shape: [1, 1, 3, 3]
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[1, 1, 3, 3]);
+            
+            // With align_corners, the corners should match exactly
+            assert_eq!(arr[[0, 0, 0, 0]], 1.0);
+            assert_eq!(arr[[0, 0, 0, 2]], 2.0);
+            assert_eq!(arr[[0, 0, 2, 0]], 3.0);
+            assert_eq!(arr[[0, 0, 2, 2]], 4.0);
+            
+            // Middle values should be interpolated
+            assert!((arr[[0, 0, 0, 1]] - 1.5).abs() < 1e-5);
+            assert!((arr[[0, 0, 1, 0]] - 2.0).abs() < 1e-5);
+            assert!((arr[[0, 0, 1, 1]] - 2.5).abs() < 1e-5);
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_resize_cubic_mode() {
+    // Create a simple 2D input tensor
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1, 1, 3, 3],
+        DataType::Float,
+    );
+    
+    // Create empty ROI tensor
+    let roi_data: Vec<f32> = vec![];
+    let roi = create_ort_tensor(
+        roi_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![0],
+        DataType::Float,
+    );
+    
+    // Create scales tensor (scale by 2x)
+    let scales_data = vec![1.0f32, 1.0, 2.0, 2.0];
+    let scales = create_ort_tensor(
+        scales_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create node with cubic mode
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "mode".to_string(),
+            s: "cubic".as_bytes().to_vec(),
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "cubic_coeff_a".to_string(),
+            f: -0.5,
+            ..Default::default()
+        }
+    ];
+    
+    // Execute resize operation
+    let inputs = vec![input, roi, scales];
+    let result = OrtEngine::op_resize(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected output shape: [1, 1, 6, 6]
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[1, 1, 6, 6]);
+            // Just check that the corners are preserved
+            assert!((arr[[0, 0, 0, 0]] - 1.0).abs() < 0.1);
+            assert!((arr[[0, 0, 0, 5]] - 3.0).abs() < 0.1);
+            assert!((arr[[0, 0, 5, 0]] - 7.0).abs() < 0.1);
+            assert!((arr[[0, 0, 5, 5]] - 9.0).abs() < 0.1);
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_resize_invalid_inputs() {
+    // Create a simple input tensor
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![1, 2, 2, 1],
+        DataType::Float,
+    );
+    
+    // Create empty ROI tensor
+    let roi_data: Vec<f32> = vec![];
+    let roi = create_ort_tensor(
+        roi_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![0],
+        DataType::Float,
+    );
+    
+    // Create invalid scales tensor (negative scale)
+    let scales_data = vec![1.0f32, 1.0, -2.0, 2.0];
+    let scales = create_ort_tensor(
+        scales_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![4],
+        DataType::Float,
+    );
+    
+    // Create node
+    let node = NodeProto::default();
+    
+    // Execute resize operation - should fail due to negative scale
+    let inputs = vec![input.clone(), roi.clone(), scales.clone()];
+    let result = OrtEngine::op_resize(&node, &inputs);
+    assert!(result.is_err());
+    
+    // Test with neither scales nor sizes provided
+    let inputs = vec![input, roi];
+    let result = OrtEngine::op_resize(&node, &inputs);
+    assert!(result.is_err());
 }
 
 

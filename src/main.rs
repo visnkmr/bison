@@ -1385,27 +1385,51 @@ impl OrtEngine {
         for (name, value) in inputs {
             tensor_map.insert(name, value);
         }
-    
+        // let mut i=0;
+        println!("total no of nodes is {}",graph.node.len());
         // Process each node
-        for node in &graph.node {
+        for node in (&graph.node) {
+            // i+=1;
             if node.output.is_empty() {
                 return Err(OrtError::InvalidModel);
             }
             // Collect inputs for the node, allowing for optional inputs
-            let node_inputs = node.input.iter()
-                .map(|name| {
-                    if name.is_empty() {
-                        
-                        // Handle optional inputs (empty name indicates optional input)
-                        Ok(None)
-                    } else {
-                        tensor_map.get(name)
-                            .cloned()
-                            .ok_or_else(|| OrtError::MissingInput(format!("Required input missing: {}", name)))
-                            .map(Some)
-                    }
-                })
-                .collect::<OrtResult<Vec<Option<OrtValue>>>>()?;
+            let node_inputs = node.input.iter().enumerate()
+    .map(|(index, name)| {
+        if name.is_empty() {
+            // Check if this is at the end of the input list
+            let is_last = index == node.input.len() - 1;
+            let is_followed_by_empty = node.input.iter().skip(index + 1).all(|n| n.is_empty());
+            
+            if is_last || is_followed_by_empty {
+                // Ignore empty-named inputs at the end
+                Ok(None)
+            } else {
+                // Get data type from model.graph.input by index
+                // let dtype = model.graph.input.get(index)
+                //     .and_then(|input| input.type_info.as_ref())
+                //     .and_then(|type_info| type_info.tensor_type.as_ref())
+                //     .map(|tensor_type| convert_onnx_type_to_ort(tensor_type.elem_type))
+                //     .unwrap_or_else(|| {
+                //         eprintln!("Warning: Cannot determine data type for input at index {}. Using default Float32.", index);
+                //         DataType::Float
+                //     });
+                Ok(Some(OrtValue::Tensor {
+                    shape: vec![], // Scalar tensor for empty input
+                    dtype: DataType::Float,
+                    data: Arc::new(vec![]), // Empty data
+                }))
+            }
+        } else {
+            // Handle required inputs
+            tensor_map
+                .get(name)
+                .cloned()
+                .ok_or_else(|| OrtError::MissingInput(format!("Required input missing for node {}: {}", node.name, name)))
+                .map(Some)
+        }
+    })
+    .collect::<OrtResult<Vec<Option<OrtValue>>>>()?;
     
             // Filter out None values (optional inputs)
             let node_inputs: Vec<OrtValue> = node_inputs.into_iter().flatten().collect();

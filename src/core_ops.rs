@@ -1511,72 +1511,322 @@ for g in 0..group {
         
     // }
     pub fn op_greater(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-// Get the input tensors
-let input1 = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Greater requires two tensors".to_string()))?;
-let input2 = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Greater requires two tensors".to_string()))?;
+        // Get the input tensors
+        let input1 = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Greater requires two tensors".to_string()))?;
+        let input2 = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("Greater requires two tensors".to_string()))?;
 
-// Check that both inputs are numeric tensors
-match (input1, input2) {
-    (OrtValue::Tensor { dtype: dtype1, .. }, OrtValue::Tensor { dtype: dtype2, .. }) => {
-        if !is_numeric_dtype(*dtype1) || !is_numeric_dtype(*dtype2) {
-            return Err(OrtError::TypeMismatch("Greater requires numeric tensors".to_string()));
+        // Check that both inputs are numeric tensors
+        match (input1, input2) {
+            (OrtValue::Tensor { dtype: dtype1, .. }, OrtValue::Tensor { dtype: dtype2, .. }) => {
+                if !is_numeric_dtype(*dtype1) || !is_numeric_dtype(*dtype2) {
+                    return Err(OrtError::TypeMismatch("Greater requires numeric tensors".to_string()));
+                }
+            },
+            _ => return Err(OrtError::TypeMismatch("Both inputs must be tensors".to_string())),
         }
-    },
-    _ => return Err(OrtError::TypeMismatch("Both inputs must be tensors".to_string())),
-}
 
-// Convert inputs to ndarrays
-let array1 = ort_to_ndarray(input1)?;
-let array2 = ort_to_ndarray(input2)?;
+        // Convert inputs to ndarrays
+        let array1 = ort_to_ndarray(input1)?;
+        let array2 = ort_to_ndarray(input2)?;
 
-// Perform the greater than comparison based on data types
-match (array1, array2) {
-    (ArrayDResult::Float(arr1), ArrayDResult::Float(arr2)) => {
-        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a > b);
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
-    },
-    (ArrayDResult::Int32(arr1), ArrayDResult::Int32(arr2)) => {
-        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a > b);
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
-    },
-    (ArrayDResult::Int64(arr1), ArrayDResult::Int64(arr2)) => {
-        let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a > b);
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
-    },
-    // Handle mixed types if needed
-    (ArrayDResult::Float(arr1), ArrayDResult::Int32(arr2)) => {
-        let arr2_float = arr2.mapv(|x| x as f32);
-        let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a > b);
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
-    },
-    (ArrayDResult::Int32(arr1), ArrayDResult::Float(arr2)) => {
-        let arr1_float = arr1.mapv(|x| x as f32);
-        let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a > b);
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
-    },
-    (ArrayDResult::Float(arr1), ArrayDResult::Int64(arr2)) => {
-        let arr2_float = arr2.mapv(|x| x as f32);
-        let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a > b);
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
-    },
-    (ArrayDResult::Int64(arr1), ArrayDResult::Float(arr2)) => {
-        let arr1_float = arr1.mapv(|x| x as f32);
-        let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a > b);
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
-    },
-    (ArrayDResult::Int32(arr1), ArrayDResult::Int64(arr2)) => {
-        let arr1_i64 = arr1.mapv(|x| x as i64);
-        let result = ndarray::Zip::from(&arr1_i64).and(&arr2).map_collect(|&a, &b| a > b);
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
-    },
-    (ArrayDResult::Int64(arr1), ArrayDResult::Int32(arr2)) => {
-        let arr2_i64 = arr2.mapv(|x| x as i64);
-        let result = ndarray::Zip::from(&arr1).and(&arr2_i64).map_collect(|&a, &b| a > b);
-        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
-    },
-    _ => Err(OrtError::TypeMismatch("Unsupported data types for Greater operation".to_string())),
-}
-        
+        // Helper function to compute broadcast shape
+        fn compute_broadcast_shape(shape1: &[usize], shape2: &[usize]) -> Option<Vec<usize>> {
+            let rank1 = shape1.len();
+            let rank2 = shape2.len();
+            let result_rank = std::cmp::max(rank1, rank2);
+            
+            let mut result_shape = Vec::with_capacity(result_rank);
+            
+            // Pad the shorter shape with 1s at the beginning
+            let padded_shape1: Vec<usize> = if rank1 < result_rank {
+                let mut padded = vec![1; result_rank - rank1];
+                padded.extend_from_slice(shape1);
+                padded
+            } else {
+                shape1.to_vec()
+            };
+            
+            let padded_shape2: Vec<usize> = if rank2 < result_rank {
+                let mut padded = vec![1; result_rank - rank2];
+                padded.extend_from_slice(shape2);
+                padded
+            } else {
+                shape2.to_vec()
+            };
+            
+            // For each dimension, take the maximum or ensure they're compatible
+            for i in 0..result_rank {
+                let dim1 = padded_shape1[i];
+                let dim2 = padded_shape2[i];
+                
+                if dim1 == dim2 {
+                    result_shape.push(dim1);
+                } else if dim1 == 1 {
+                    result_shape.push(dim2);
+                } else if dim2 == 1 {
+                    result_shape.push(dim1);
+                } else {
+                    // Incompatible shapes
+                    return None;
+                }
+            }
+            
+            Some(result_shape)
+        }
+
+        // Helper function to broadcast an array to a new shape
+        fn broadcast_array<T: Clone + Copy + PartialOrd>(arr: &ndarray::ArrayD<T>, target_shape: &[usize]) -> OrtResult<ndarray::ArrayD<T>> {
+            let current_shape = arr.shape();
+            
+            // If shapes are already the same, return a clone
+            if current_shape == target_shape {
+                return Ok(arr.clone());
+            }
+            
+            let rank_diff = target_shape.len() - current_shape.len();
+            
+            // Create a new array with the target shape
+            let mut result = ndarray::ArrayD::<T>::from_elem(target_shape.to_vec(), arr.as_slice().unwrap()[0]);
+            
+            // Iterate through the result array and fill it with values from the source array
+            for idx in ndarray::indices(target_shape) {
+                // Map the target index to the source index
+                let mut source_idx = Vec::with_capacity(current_shape.len());
+                
+                // Skip the leading dimensions that were added during broadcasting
+                for i in rank_diff..target_shape.len() {
+                    let source_dim = i - rank_diff;
+                    // If the source dimension is 1, use 0 as the index, otherwise use the target index
+                    source_idx.push(if source_dim < current_shape.len() && current_shape[source_dim] == 1 {
+                        0
+                    } else {
+                        idx[i]
+                    });
+                }
+                
+                // Set the value in the result array
+                let source_value = arr.get(source_idx.as_slice()).unwrap();
+                result[idx] = *source_value;
+            }
+            
+            Ok(result)
+        }
+
+        // Perform the greater than comparison based on data types
+        match (array1, array2) {
+            (ArrayDResult::Float(arr1), ArrayDResult::Float(arr2)) => {
+                let shape1 = arr1.shape();
+                let shape2 = arr2.shape();
+                
+                if shape1 == shape2 {
+                    // Same shape, element-wise comparison
+                    let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a > b);
+                    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                } else {
+                    // Different shapes, apply broadcasting
+                    if let Some(broadcast_shape) = compute_broadcast_shape(shape1, shape2) {
+                        let broadcast_arr1 = broadcast_array(&arr1, &broadcast_shape)?;
+                        let broadcast_arr2 = broadcast_array(&arr2, &broadcast_shape)?;
+                        
+                        let mut result = ndarray::ArrayD::<bool>::from_elem(broadcast_shape.clone(), false);
+                        for i in 0..broadcast_arr1.len() {
+                            result.as_slice_mut().unwrap()[i] = broadcast_arr1.as_slice().unwrap()[i] > broadcast_arr2.as_slice().unwrap()[i];
+                        }
+                        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                    } else {
+                        Err(OrtError::TypeMismatch("Incompatible shapes for broadcasting".to_string()))
+                    }
+                }
+            },
+            (ArrayDResult::Int32(arr1), ArrayDResult::Int32(arr2)) => {
+                let shape1 = arr1.shape();
+                let shape2 = arr2.shape();
+                
+                if shape1 == shape2 {
+                    // Same shape, element-wise comparison
+                    let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a > b);
+                    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                } else {
+                    // Different shapes, apply broadcasting
+                    if let Some(broadcast_shape) = compute_broadcast_shape(shape1, shape2) {
+                        let broadcast_arr1 = broadcast_array(&arr1, &broadcast_shape)?;
+                        let broadcast_arr2 = broadcast_array(&arr2, &broadcast_shape)?;
+                        
+                        let mut result = ndarray::ArrayD::<bool>::from_elem(broadcast_shape.clone(), false);
+                        for i in 0..broadcast_arr1.len() {
+                            result.as_slice_mut().unwrap()[i] = broadcast_arr1.as_slice().unwrap()[i] > broadcast_arr2.as_slice().unwrap()[i];
+                        }
+                        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                    } else {
+                        Err(OrtError::TypeMismatch("Incompatible shapes for broadcasting".to_string()))
+                    }
+                }
+            },
+            (ArrayDResult::Int64(arr1), ArrayDResult::Int64(arr2)) => {
+                let shape1 = arr1.shape();
+                let shape2 = arr2.shape();
+                
+                if shape1 == shape2 {
+                    // Same shape, element-wise comparison
+                    let result = ndarray::Zip::from(&arr1).and(&arr2).map_collect(|&a, &b| a > b);
+                    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                } else {
+                    // Different shapes, apply broadcasting
+                    if let Some(broadcast_shape) = compute_broadcast_shape(shape1, shape2) {
+                        let broadcast_arr1 = broadcast_array(&arr1, &broadcast_shape)?;
+                        let broadcast_arr2 = broadcast_array(&arr2, &broadcast_shape)?;
+                        
+                        let mut result = ndarray::ArrayD::<bool>::from_elem(broadcast_shape.clone(), false);
+                        for i in 0..broadcast_arr1.len() {
+                            result.as_slice_mut().unwrap()[i] = broadcast_arr1.as_slice().unwrap()[i] > broadcast_arr2.as_slice().unwrap()[i];
+                        }
+                        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                    } else {
+                        Err(OrtError::TypeMismatch("Incompatible shapes for broadcasting".to_string()))
+                    }
+                }
+            },
+            // Handle mixed types with broadcasting
+            (ArrayDResult::Float(arr1), ArrayDResult::Int32(arr2)) => {
+                let arr2_float = arr2.mapv(|x| x as f32);
+                let shape1 = arr1.shape();
+                let shape2 = arr2_float.shape();
+                
+                if shape1 == shape2 {
+                    let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a > b);
+                    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                } else {
+                    if let Some(broadcast_shape) = compute_broadcast_shape(shape1, shape2) {
+                        let broadcast_arr1 = broadcast_array(&arr1, &broadcast_shape)?;
+                        let broadcast_arr2 = broadcast_array(&arr2_float, &broadcast_shape)?;
+                        
+                        let mut result = ndarray::ArrayD::<bool>::from_elem(broadcast_shape.clone(), false);
+                        for i in 0..broadcast_arr1.len() {
+                            result.as_slice_mut().unwrap()[i] = broadcast_arr1.as_slice().unwrap()[i] > broadcast_arr2.as_slice().unwrap()[i];
+                        }
+                        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                    } else {
+                        Err(OrtError::TypeMismatch("Incompatible shapes for broadcasting".to_string()))
+                    }
+                }
+            },
+            (ArrayDResult::Int32(arr1), ArrayDResult::Float(arr2)) => {
+                let arr1_float = arr1.mapv(|x| x as f32);
+                let shape1 = arr1_float.shape();
+                let shape2 = arr2.shape();
+                
+                if shape1 == shape2 {
+                    let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a > b);
+                    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                } else {
+                    if let Some(broadcast_shape) = compute_broadcast_shape(shape1, shape2) {
+                        let broadcast_arr1 = broadcast_array(&arr1_float, &broadcast_shape)?;
+                        let broadcast_arr2 = broadcast_array(&arr2, &broadcast_shape)?;
+                        
+                        let mut result = ndarray::ArrayD::<bool>::from_elem(broadcast_shape.clone(), false);
+                        for i in 0..broadcast_arr1.len() {
+                            result.as_slice_mut().unwrap()[i] = broadcast_arr1.as_slice().unwrap()[i] > broadcast_arr2.as_slice().unwrap()[i];
+                        }
+                        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                    } else {
+                        Err(OrtError::TypeMismatch("Incompatible shapes for broadcasting".to_string()))
+                    }
+                }
+            },
+            (ArrayDResult::Float(arr1), ArrayDResult::Int64(arr2)) => {
+                let arr2_float = arr2.mapv(|x| x as f32);
+                let shape1 = arr1.shape();
+                let shape2 = arr2_float.shape();
+                
+                if shape1 == shape2 {
+                    let result = ndarray::Zip::from(&arr1).and(&arr2_float).map_collect(|&a, &b| a > b);
+                    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                } else {
+                    if let Some(broadcast_shape) = compute_broadcast_shape(shape1, shape2) {
+                        let broadcast_arr1 = broadcast_array(&arr1, &broadcast_shape)?;
+                        let broadcast_arr2 = broadcast_array(&arr2_float, &broadcast_shape)?;
+                        
+                        let mut result = ndarray::ArrayD::<bool>::from_elem(broadcast_shape.clone(), false);
+                        for i in 0..broadcast_arr1.len() {
+                            result.as_slice_mut().unwrap()[i] = broadcast_arr1.as_slice().unwrap()[i] > broadcast_arr2.as_slice().unwrap()[i];
+                        }
+                        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                    } else {
+                        Err(OrtError::TypeMismatch("Incompatible shapes for broadcasting".to_string()))
+                    }
+                }
+            },
+            (ArrayDResult::Int64(arr1), ArrayDResult::Float(arr2)) => {
+                let arr1_float = arr1.mapv(|x| x as f32);
+                let shape1 = arr1_float.shape();
+                let shape2 = arr2.shape();
+                
+                if shape1 == shape2 {
+                    let result = ndarray::Zip::from(&arr1_float).and(&arr2).map_collect(|&a, &b| a > b);
+                    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                } else {
+                    if let Some(broadcast_shape) = compute_broadcast_shape(shape1, shape2) {
+                        let broadcast_arr1 = broadcast_array(&arr1_float, &broadcast_shape)?;
+                        let broadcast_arr2 = broadcast_array(&arr2, &broadcast_shape)?;
+                        
+                        let mut result = ndarray::ArrayD::<bool>::from_elem(broadcast_shape.clone(), false);
+                        for i in 0..broadcast_arr1.len() {
+                            result.as_slice_mut().unwrap()[i] = broadcast_arr1.as_slice().unwrap()[i] > broadcast_arr2.as_slice().unwrap()[i];
+                        }
+                        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                    } else {
+                        Err(OrtError::TypeMismatch("Incompatible shapes for broadcasting".to_string()))
+                    }
+                }
+            },
+            (ArrayDResult::Int32(arr1), ArrayDResult::Int64(arr2)) => {
+                let arr1_i64 = arr1.mapv(|x| x as i64);
+                let shape1 = arr1_i64.shape();
+                let shape2 = arr2.shape();
+                
+                if shape1 == shape2 {
+                    let result = ndarray::Zip::from(&arr1_i64).and(&arr2).map_collect(|&a, &b| a > b);
+                    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                } else {
+                    if let Some(broadcast_shape) = compute_broadcast_shape(shape1, shape2) {
+                        let broadcast_arr1 = broadcast_array(&arr1_i64, &broadcast_shape)?;
+                        let broadcast_arr2 = broadcast_array(&arr2, &broadcast_shape)?;
+                        
+                        let mut result = ndarray::ArrayD::<bool>::from_elem(broadcast_shape.clone(), false);
+                        for i in 0..broadcast_arr1.len() {
+                            result.as_slice_mut().unwrap()[i] = broadcast_arr1.as_slice().unwrap()[i] > broadcast_arr2.as_slice().unwrap()[i];
+                        }
+                        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                    } else {
+                        Err(OrtError::TypeMismatch("Incompatible shapes for broadcasting".to_string()))
+                    }
+                }
+            },
+            (ArrayDResult::Int64(arr1), ArrayDResult::Int32(arr2)) => {
+                let arr2_i64 = arr2.mapv(|x| x as i64);
+                let shape1 = arr1.shape();
+                let shape2 = arr2_i64.shape();
+                
+                if shape1 == shape2 {
+                    let result = ndarray::Zip::from(&arr1).and(&arr2_i64).map_collect(|&a, &b| a > b);
+                    Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                } else {
+                    if let Some(broadcast_shape) = compute_broadcast_shape(shape1, shape2) {
+                        let broadcast_arr1 = broadcast_array(&arr1, &broadcast_shape)?;
+                        let broadcast_arr2 = broadcast_array(&arr2_i64, &broadcast_shape)?;
+                        
+                        let mut result = ndarray::ArrayD::<bool>::from_elem(broadcast_shape.clone(), false);
+                        for i in 0..broadcast_arr1.len() {
+                            result.as_slice_mut().unwrap()[i] = broadcast_arr1.as_slice().unwrap()[i] > broadcast_arr2.as_slice().unwrap()[i];
+                        }
+                        Ok(ndarray_to_ort(ArrayDResult::Boolean(result), DataType::Boolean))
+                    } else {
+                        Err(OrtError::TypeMismatch("Incompatible shapes for broadcasting".to_string()))
+                    }
+                }
+            },
+            _ => Err(OrtError::TypeMismatch("Unsupported data types for Greater operation".to_string())),
+        }
     }
 
     pub fn op_equal(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
@@ -3565,10 +3815,10 @@ match (array1, array2) {
                                         w_array[[ic, oc_within_group, kl, 0]]
                                     };
                                         
-                                    let ol_start = il * stride_l - pad_l_begin + kl * dilation_l;
+                                    let ol_start = (il * stride_l) as isize - pad_l_begin as isize + (kl * dilation_l) as isize;
                                         // Check if the output position is valid
-                                    if ol_start >= 0 && ol_start < output_length {
-                                        output[[n, oc, ol_start]] += x_val * w_val;
+                                    if ol_start >= 0 && (ol_start as usize) < output_length {
+                                        output[[n, oc, ol_start as usize]] += x_val * w_val;
                                         }
                                     }
                                 }
@@ -6155,7 +6405,7 @@ vec![
             let roi = inputs.get(1);
             let scales = inputs.get(2);
             let sizes = inputs.get(3);
-
+            // println!("x========={:?}===============roi============{:?}================scales=============={:?}====================sizes=================={:?}",x,roi,scales,sizes);
             // Extract the data type and shape of the input tensor
             let (input_dtype, input_shape) = match x {
                 OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
@@ -6242,9 +6492,26 @@ vec![
 
             // Extract ROI if provided
             let roi_values = if let Some(roi_tensor) = roi {
-                match ort_to_ndarray(roi_tensor)? {
-                    ArrayDResult::Float(arr) => Some(arr.iter().cloned().collect::<Vec<f32>>()),
+                match roi_tensor {
+                    OrtValue::Tensor { shape, dtype, data } => {
+                        if data.is_empty() {
+                            // Default ROI is [0, ..., 0, 1, ..., 1]
+                            let mut default_roi = Vec::with_capacity(2 * rank);
+                            for _ in 0..rank {
+                                default_roi.push(0.0);
+                            }
+                            for _ in 0..rank {
+                                default_roi.push(1.0);
+                            }
+                            Some(default_roi)
+                        } else {
+                            match ort_to_ndarray(roi_tensor)? {
+                                ArrayDResult::Float(arr) => Some(arr.iter().cloned().collect::<Vec<f32>>()),
                     _ => return Err(OrtError::TypeMismatch("ROI tensor must be float".to_string())),
+                }
+                        }
+                    },
+                    _ => return Err(OrtError::TypeMismatch("ROI input must be a tensor".to_string())),
                 }
             } else {
                 // Default ROI is [0, ..., 0, 1, ..., 1]
@@ -6305,39 +6572,49 @@ vec![
                 output_shape
             } else if let Some(scales_tensor) = scales {
                 // Use scales to determine output shape
-                let scales_array = match ort_to_ndarray(scales_tensor)? {
-                    ArrayDResult::Float(arr) => arr.iter().cloned().collect::<Vec<f32>>(),
-                    _ => return Err(OrtError::TypeMismatch("Scales tensor must be float".to_string())),
-                };
-                
-                if scales_array.len() != resize_axes.len() {
-                    return Err(OrtError::InvalidTensorData(
-                        format!("Scales length ({}) must match number of resize axes ({})", 
-                                scales_array.len(), resize_axes.len()).into()
-                    ));
-                }
-                
-                let mut output_shape = input_shape_vec.clone();
-                
-                // Apply scales to each dimension
-                for (i, &axis) in resize_axes.iter().enumerate() {
-                    let scale = scales_array[i];
-                    if scale <= 0.0 {
-                        return Err(OrtError::InvalidTensorData(
-                            format!("Scale value must be positive, got {}", scale).into()
-                        ));
-                    }
-                    
-                    // Calculate output dimension
-                    let roi_start = roi_values.as_ref().map(|r| r[axis]).unwrap_or(0.0);
-                    let roi_end = roi_values.as_ref().map(|r| r[axis + rank]).unwrap_or(1.0);
-                    
-                    let output_dim = ((input_shape_vec[axis] as f32) * (roi_end - roi_start) * scale).floor() as usize;
-                    output_shape[axis] = output_dim;
-                }
-                
-                output_shape
+                match scales_tensor {
+                    OrtValue::Tensor { shape, dtype, data } => {
+                        if data.is_empty() {
+                            // If scales tensor is empty, return input shape
+                            input_shape_vec.clone()
             } else {
+                            let scales_array = match ort_to_ndarray(scales_tensor)? {
+                                ArrayDResult::Float(arr) => arr.iter().cloned().collect::<Vec<f32>>(),
+                                _ => return Err(OrtError::TypeMismatch("Scales tensor must be float".to_string())),
+            };
+
+                            if scales_array.len() != resize_axes.len() {
+                                return Err(OrtError::InvalidTensorData(
+                                    format!("Scales length ({}) must match number of resize axes ({})", 
+                                            scales_array.len(), resize_axes.len()).into()
+                                ));
+                            }
+                            
+                            let mut output_shape = input_shape_vec.clone();
+                            
+                            // Apply scales to each dimension
+                            for (i, &axis) in resize_axes.iter().enumerate() {
+                                let scale = scales_array[i];
+                                if scale <= 0.0 {
+                                    return Err(OrtError::InvalidTensorData(
+                                        format!("Scale value must be positive, got {}", scale).into()
+                                    ));
+                                }
+                                
+                                // Calculate output dimension
+                                let roi_start = roi_values.as_ref().map(|r| r[axis]).unwrap_or(0.0);
+                                let roi_end = roi_values.as_ref().map(|r| r[axis + rank]).unwrap_or(1.0);
+                                
+                                let output_dim = ((input_shape_vec[axis] as f32) * (roi_end - roi_start) * scale).floor() as usize;
+                                output_shape[axis] = output_dim;
+                            }
+                            
+                            output_shape
+                        }
+                    },
+                    _ => return Err(OrtError::TypeMismatch("Scales input must be a tensor".to_string())),
+                }
+                        } else {
                 return Err(OrtError::InvalidTensorData("Either scales or sizes must be provided".into()));
             };
 
@@ -6366,20 +6643,20 @@ vec![
                         if out_size > 1 && in_size > 1 {
                             out_coord * (in_size as f32 - 1.0) / (out_size as f32 - 1.0)
                         } else {
-                            0.0
-                        }
+                    0.0
+                }
                     },
                     "asymmetric" => {
                         out_coord / scale
-                    },
+                            },
                     "tf_crop_and_resize" => {
                         if out_size > 1 {
                             roi_start * (in_size as f32 - 1.0) + 
                             out_coord * (roi_end - roi_start) * (in_size as f32 - 1.0) / (out_size as f32 - 1.0)
-                        } else {
+                                        } else {
                             0.5 * (roi_start + roi_end) * (in_size as f32 - 1.0)
                         }
-                    },
+                            },
                     _ => out_coord / scale, // Default to asymmetric
                 }
             };
@@ -6390,23 +6667,23 @@ vec![
                     "round_prefer_floor" => {
                         if x.fract() == 0.5 {
                             x.floor() as i32
-                        } else {
+                                            } else {
                             x.round() as i32
-                        }
-                    },
+                                        }
+                            },
                     "round_prefer_ceil" => {
                         if x.fract() == 0.5 {
                             x.ceil() as i32
                         } else {
                             x.round() as i32
-                        }
-                    },
+                    }
+                },
                     "floor" => x.floor() as i32,
                     "ceil" => x.ceil() as i32,
                     _ => x.round() as i32, // Default to round
-                }
+            }
             };
-
+        
             // Helper function for cubic interpolation
             let cubic_interpolation = |x: f32, a: f32| -> f32 {
                 let x = x.abs();
@@ -6416,9 +6693,9 @@ vec![
                     ((a * x - 5.0 * a) * x + 8.0 * a) * x - 4.0 * a
                 } else {
                     0.0
-                }
+    }
             };
-
+        
             // Perform resize based on data type
             match x_array {
                 ArrayDResult::Float(arr) => {
@@ -8256,10 +8533,16 @@ if signal_array.ndim() != 3 {
     ));
 }
 
-let batch_size = signal_array.shape()[0];
-let signal_length = signal_array.shape()[1];
-let channels = signal_array.shape()[2];
-
+// Check signal shape
+let (batch_size, signal_length, channels) = if signal_array.ndim() == 2 {
+    (signal_array.shape()[0], signal_array.shape()[1], 1)
+} else if signal_array.ndim() == 3 {
+    (signal_array.shape()[0], signal_array.shape()[1], signal_array.shape()[2])
+} else {
+    return Err(OrtError::InvalidTensorData(
+        format!("Signal must have 2 or 3 dimensions [batch_size, signal_length, channels], got {:?}", signal_array.shape()).into()
+    ));
+};
 // Check if signal is real or complex
 let is_complex = channels == 2;
 if channels != 1 && channels != 2 {

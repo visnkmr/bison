@@ -1366,7 +1366,19 @@ impl OrtEngine {
         // println!("starting inference2");
         // Load all initializers into tensor_map
         for tensor in &graph.initializer {
-            // println!("{:?}",tensor);
+            // if tensor.name.contains("/encoder/bert/embeddings/token_type_embeddings/Constant_output_0"){
+            //     println!("-----------------------------------------------------------------");
+            //     println!("-----------------------------------------------------------------");
+            //     println!("-----------------------------------------------------------------");
+            //     println!("-----------------------------------------------------------------");
+            //     println!("{:?}",tensor);
+            //     println!("-----------------------------------------------------------------");
+            //     println!("-----------------------------------------------------------------");
+            //     println!("-----------------------------------------------------------------");
+            //     println!("-----------------------------------------------------------------");
+                
+                
+            // }
 
             if !tensor.name.is_empty() {
                 match self.parse_tensor(tensor) {
@@ -1388,7 +1400,23 @@ impl OrtEngine {
         // let mut i=0;
         println!("total no of nodes is {}",graph.node.len());
         // Process each node
+        // let mut execution_times = Vec::new();
+        let started_at = std::time::Instant::now();
+        let mut last_save_time = std::time::Instant::now();
+        let save_interval = std::time::Duration::from_secs(30); // Save every 30 seconds
+        let mut execution_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("./execution_times1.csv")
+            .map_err(|e| {
+                eprintln!("Warning: Failed to open execution times file: {}", e);
+                e
+            })
+            .ok();
+            
         for node in (&graph.node) {
+            let start_time = std::time::Instant::now();
+            
             // i+=1;
             if node.output.is_empty() {
                 return Err(OrtError::InvalidModel);
@@ -1436,8 +1464,7 @@ impl OrtEngine {
     
             let output = if let Some(op) = self.node_registry.get(&node.op_type) {
                 // if node.op_type == "Gather"{
-                
-                //     println!("{:?}---{:?}",node,node_inputs);
+                    println!("{:?}---{:?}",node,node_inputs);
                 // }
                 op(node, &node_inputs)?
             // } else if node.op_type == "If" {
@@ -1465,8 +1492,38 @@ impl OrtEngine {
                     return Err(OrtError::TypeMismatch(format!("Expected multiple outputs but got single value")));
                 }
             }
+            
+            let elapsed = start_time.elapsed();
+            println!("Node '{}' (op: {}) took: {:?}total been running for {:?}", node.name, node.op_type, elapsed,started_at.elapsed());
+            
+            // Append execution time data immediately to file
+            let execution_line = format!("{},{},{:?}\n", node.name, node.op_type, elapsed);
+            if let Some(ref mut file) = execution_file {
+                use std::io::Write;
+                if let Err(e) = file.write_all(execution_line.as_bytes()) {
+                    eprintln!("Warning: Failed to write execution time: {}", e);
         }
-    
+                if let Err(e) = file.flush() {
+                    eprintln!("Warning: Failed to flush execution times: {}", e);
+                }
+            }
+            
+            // Periodically ensure data is synced to disk
+            if last_save_time.elapsed() >= save_interval {
+                if let Some(ref mut file) = execution_file {
+                    use std::io::Write;
+                    if let Err(e) = file.flush() {
+                        eprintln!("Warning: Failed to flush execution times: {}", e);
+                    }
+                }
+                last_save_time = std::time::Instant::now();
+            }
+        }
+        
+        // Final save of execution times
+        // if let Err(e) = std::fs::write("execution_times.csv", execution_times.join("\n")) {
+        //     eprintln!("Warning: Failed to save final execution times: {}", e);
+        // }
         // Collect graph outputs
         graph.output.iter()
             .map(|output| tensor_map.get(&output.name)

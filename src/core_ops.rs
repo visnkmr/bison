@@ -8440,238 +8440,237 @@ Ok(ndarray_to_ort(ArrayDResult::Float(output), input_dtype))
         
     }
 
-    pub fn op_stft(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-// Get the input tensors
-let signal = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("STFT requires signal tensor".to_string()))?;
-let frame_step = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("STFT requires frame_step tensor".to_string()))?;
-let window = inputs.get(2); // Optional window tensor
-let frame_length = inputs.get(3); // Optional frame_length tensor
 
-// Extract the data type and shape of the input signal tensor
-let (input_dtype, input_shape) = match signal {
-    OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
-    _ => return Err(OrtError::TypeMismatch("Signal input must be a tensor".to_string())),
-};
+pub fn op_stft(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    // Get the input tensors
+    let signal = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("STFT requires signal tensor".to_string()))?;
+    let frame_step = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("STFT requires frame_step tensor".to_string()))?;
+    let window = inputs.get(2); // Optional window tensor
+    let frame_length = inputs.get(3); // Optional frame_length tensor
 
-// Check that the data type is float
-if input_dtype != DataType::Float {
-    return Err(OrtError::TypeMismatch(format!("STFT requires float tensor, got {:?}", input_dtype)));
-}
+    // Extract the data type and shape of the input signal tensor
+    let (input_dtype, input_shape) = match signal {
+        OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
+        _ => return Err(OrtError::TypeMismatch("Signal input must be a tensor".to_string())),
+    };
 
-// Get the onesided attribute (default is 1)
-let onesided = node.attributes.iter()
-    .find(|a| a.name == "onesided")
-    .map(|a| a.i == 1)
-    .unwrap_or(true);
-
-// Convert inputs to ndarrays
-let signal_array = match ort_to_ndarray(signal)? {
-    ArrayDResult::Float(arr) => arr,
-    _ => return Err(OrtError::TypeMismatch("Signal must be a float tensor".to_string())),
-};
-
-// Extract frame_step value
-let frame_step_value = match ort_to_ndarray(frame_step)? {
-    ArrayDResult::Int32(arr) => {
-        if arr.len() != 1 {
-            return Err(OrtError::InvalidTensorData("frame_step must be a scalar".into()));
-        }
-        arr[ndarray::IxDyn(&[])] as usize
-    },
-    ArrayDResult::Int64(arr) => {
-        if arr.len() != 1 {
-            return Err(OrtError::InvalidTensorData("frame_step must be a scalar".into()));
-        }
-        arr[ndarray::IxDyn(&[])] as usize
-    },
-    _ => return Err(OrtError::TypeMismatch("frame_step must be int32 or int64".to_string())),
-};
-
-// Extract window tensor if provided
-let window_array = if let Some(w) = window {
-    match ort_to_ndarray(w)? {
-        ArrayDResult::Float(arr) => {
-            if arr.ndim() != 1 {
-                return Err(OrtError::InvalidTensorData("window must have rank 1".into()));
-            }
-            Some(arr)
-        },
-        _ => return Err(OrtError::TypeMismatch("window must be a float tensor".to_string())),
+    // Check that the data type is float
+    if input_dtype != DataType::Float {
+        return Err(OrtError::TypeMismatch(format!("STFT requires float tensor, got {:?}", input_dtype)));
     }
-} else {
-    None
-};
 
-// Extract frame_length if provided
-let frame_length_value = if let Some(fl) = frame_length {
-    match ort_to_ndarray(fl)? {
+    // Get the onesided attribute (default is 1)
+    let onesided = node.attributes.iter()
+        .find(|a| a.name == "onesided")
+        .map(|a| a.i == 1)
+        .unwrap_or(true);
+
+    // Convert inputs to ndarrays
+    let signal_array = match ort_to_ndarray(signal)? {
+        ArrayDResult::Float(arr) => {
+            if arr.ndim() == 2 {
+                // Reshape [batch_size, signal_length] to [batch_size, signal_length, 1]
+                arr.clone().into_shape(ndarray::IxDyn(&[arr.shape()[0], arr.shape()[1], 1]))
+                    .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape signal: {}", e)))?
+            } else if arr.ndim() == 3 {
+                arr
+            } else {
+                return Err(OrtError::InvalidTensorData(
+                    format!("Signal must have 2 or 3 dimensions [batch_size, signal_length, channels], got {:?}", arr.shape()).into()
+                ));
+            }
+        }
+        _ => return Err(OrtError::TypeMismatch("Signal must be a float tensor".to_string())),
+    };
+
+    // Extract frame_step value
+    let frame_step_value = match ort_to_ndarray(frame_step)? {
         ArrayDResult::Int32(arr) => {
             if arr.len() != 1 {
-                return Err(OrtError::InvalidTensorData("frame_length must be a scalar".into()));
+                return Err(OrtError::InvalidTensorData("frame_step must be a scalar".into()));
             }
             arr[ndarray::IxDyn(&[])] as usize
         },
         ArrayDResult::Int64(arr) => {
             if arr.len() != 1 {
-                return Err(OrtError::InvalidTensorData("frame_length must be a scalar".into()));
+                return Err(OrtError::InvalidTensorData("frame_step must be a scalar".into()));
             }
             arr[ndarray::IxDyn(&[])] as usize
         },
-        _ => return Err(OrtError::TypeMismatch("frame_length must be int32 or int64".to_string())),
+        _ => return Err(OrtError::TypeMismatch("frame_step must be int32 or int64".to_string())),
+    };
+
+    // Extract window tensor if provided
+    let window_array = if let Some(w) = window {
+        match ort_to_ndarray(w)? {
+            ArrayDResult::Float(arr) => {
+                if arr.ndim() != 1 {
+                    return Err(OrtError::InvalidTensorData("window must have rank 1".into()));
+                }
+                Some(arr)
+            },
+            _ => return Err(OrtError::TypeMismatch("window must be a float tensor".to_string())),
+        }
+    } else {
+        None
+    };
+
+    // Extract frame_length if provided
+    let frame_length_value = if let Some(fl) = frame_length {
+        match ort_to_ndarray(fl)? {
+            ArrayDResult::Int32(arr) => {
+                if arr.len() != 1 {
+                    return Err(OrtError::InvalidTensorData("frame_length must be a scalar".into()));
+                }
+                arr[ndarray::IxDyn(&[])] as usize
+            },
+            ArrayDResult::Int64(arr) => {
+                if arr.len() != 1 {
+                    return Err(OrtError::InvalidTensorData("frame_length must be a scalar".into()));
+                }
+                arr[ndarray::IxDyn(&[])] as usize
+            },
+            _ => return Err(OrtError::TypeMismatch("frame_length must be int32 or int64".to_string())),
+        }
+    } else if let Some(ref w) = window_array {
+        w.len()
+    } else {
+        // Default frame_length if neither window nor frame_length is provided
+        signal_array.shape()[1]
+    };
+
+    // Extract shape information
+    let batch_size = signal_array.shape()[0];
+    let signal_length = signal_array.shape()[1];
+    let channels = signal_array.shape()[2];
+
+    // Check if signal is real or complex
+    let is_complex = channels == 2;
+    if channels != 1 && channels != 2 {
+        return Err(OrtError::InvalidTensorData(
+            format!("Signal must have 1 (real) or 2 (complex) channels, got {}", channels).into()
+        ));
     }
-} else if let Some(ref w) = window_array {
-    w.len()
-} else {
-    // Default frame_length if neither window nor frame_length is provided
-    signal_array.shape()[1]
-};
 
-// Check signal shape
-if signal_array.ndim() != 3 {
-    return Err(OrtError::InvalidTensorData(
-        format!("Signal must have 3 dimensions [batch_size, signal_length, channels], got {:?}", signal_array.shape()).into()
-    ));
-}
+    // If signal is complex and onesided is true, we can't compute onesided FFT
+    if is_complex && onesided {
+        return Err(OrtError::InvalidTensorData(
+            "Cannot compute onesided FFT for complex input signal".into()
+        ));
+    }
 
-// Check signal shape
-let (batch_size, signal_length, channels) = if signal_array.ndim() == 2 {
-    (signal_array.shape()[0], signal_array.shape()[1], 1)
-} else if signal_array.ndim() == 3 {
-    (signal_array.shape()[0], signal_array.shape()[1], signal_array.shape()[2])
-} else {
-    return Err(OrtError::InvalidTensorData(
-        format!("Signal must have 2 or 3 dimensions [batch_size, signal_length, channels], got {:?}", signal_array.shape()).into()
-    ));
-};
-// Check if signal is real or complex
-let is_complex = channels == 2;
-if channels != 1 && channels != 2 {
-    return Err(OrtError::InvalidTensorData(
-        format!("Signal must have 1 (real) or 2 (complex) channels, got {}", channels).into()
-    ));
-}
+    // Create window if not provided
+    let window_values = if let Some(w) = window_array {
+        w
+    } else {
+        // Default to rectangular window
+        ndarray::ArrayD::<f32>::ones(ndarray::IxDyn(&[frame_length_value]))
+    };
 
-// If signal is complex and onesided is true, we can't compute onesided FFT
-if is_complex && onesided {
-    return Err(OrtError::InvalidTensorData(
-        "Cannot compute onesided FFT for complex input signal".into()
-    ));
-}
+    // Check window length
+    if window_values.len() != frame_length_value {
+        return Err(OrtError::InvalidTensorData(
+            format!("Window length ({}) must match frame_length ({})", window_values.len(), frame_length_value).into()
+        ));
+    }
 
-// Create window if not provided
-let window_values = if let Some(w) = window_array {
-    w
-} else {
-    // Default to rectangular window
-ndarray::ArrayD::<f32>::ones(ndarray::IxDyn(&[frame_length_value]))
-};
+    // Calculate number of frames
+    let frames = (signal_length - frame_length_value) / frame_step_value + 1;
 
-// Check window length
-if window_values.len() != frame_length_value {
-    return Err(OrtError::InvalidTensorData(
-        format!("Window length ({}) must match frame_length ({})", window_values.len(), frame_length_value).into()
-    ));
-}
+    // Calculate number of unique FFT bins for onesided output
+    let dft_unique_bins = if onesided {
+        frame_length_value / 2 + 1
+    } else {
+        frame_length_value
+    };
 
-// Calculate number of frames
-let frames = (signal_length - frame_length_value) / frame_step_value + 1;
+    // Create output array
+    let output_shape = [batch_size, frames, dft_unique_bins, 2];
+    let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&output_shape));
 
-// Calculate number of unique FFT bins for onesided output
-let dft_unique_bins = if onesided {
-    frame_length_value / 2 + 1
-} else {
-    frame_length_value
-};
+    // Helper function to compute complex multiplication
+    let complex_mul = |a_real: f32, a_imag: f32, b_real: f32, b_imag: f32| -> (f32, f32) {
+        (
+            a_real * b_real - a_imag * b_imag,
+            a_real * b_imag + a_imag * b_real
+        )
+    };
 
-// Create output array
-let output_shape = [batch_size, frames, dft_unique_bins, 2];
-let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&output_shape));
+    // Helper function to compute DFT
+    let compute_dft = |frame: &[f32], is_complex: bool, frame_length: usize, output: &mut ndarray::ArrayViewMutD<f32>| {
+        let n = frame_length;
 
-// Helper function to compute complex multiplication
-let complex_mul = |a_real: f32, a_imag: f32, b_real: f32, b_imag: f32| -> (f32, f32) {
-    (
-        a_real * b_real - a_imag * b_imag,
-        a_real * b_imag + a_imag * b_real
-    )
-};
+        for k in 0..dft_unique_bins {
+            let mut real_sum = 0.0;
+            let mut imag_sum = 0.0;
 
-// Helper function to compute DFT
-let compute_dft = |frame: &[f32], is_complex: bool, frame_length: usize, output: &mut ndarray::ArrayViewMutD<f32>| {
-    let n = frame_length;
-    
-    for k in 0..dft_unique_bins {
-        let mut real_sum = 0.0;
-        let mut imag_sum = 0.0;
-        
-        for t in 0..n {
-            let angle = -2.0 * std::f32::consts::PI * (k as f32) * (t as f32) / (n as f32);
-            let cos_val = angle.cos();
-            let sin_val = angle.sin();
-            
-            if is_complex {
-                let real = frame[t * 2];
-                let imag = frame[t * 2 + 1];
-                let (mul_real, mul_imag) = complex_mul(real, imag, cos_val, sin_val);
-                real_sum += mul_real;
-                imag_sum += mul_imag;
+            for t in 0..n {
+                let angle = -2.0 * std::f32::consts::PI * (k as f32) * (t as f32) / (n as f32);
+                let cos_val = angle.cos();
+                let sin_val = angle.sin();
+
+                if is_complex {
+                    let real = frame[t * 2];
+                    let imag = frame[t * 2 + 1];
+                    let (mul_real, mul_imag) = complex_mul(real, imag, cos_val, sin_val);
+                    real_sum += mul_real;
+                    imag_sum += mul_imag;
+                } else {
+                    real_sum += frame[t] * cos_val;
+                    imag_sum += frame[t] * sin_val;
+                }
+            }
+
+            output[[k, 0]] = real_sum;
+            output[[k, 1]] = imag_sum;
+        }
+    };
+
+    // Process each batch and frame
+    for b in 0..batch_size {
+        for f in 0..frames {
+            let start_idx = f * frame_step_value;
+            let end_idx = start_idx + frame_length_value;
+
+            if end_idx > signal_length {
+                // Zero-pad if frame extends beyond signal
+                let mut frame = vec![0.0; frame_length_value * channels];
+                let valid_samples = signal_length - start_idx;
+
+                if is_complex {
+                    for i in 0..valid_samples {
+                        frame[i * 2] = signal_array[[b, start_idx + i, 0]] * window_values[i];
+                        frame[i * 2 + 1] = signal_array[[b, start_idx + i, 1]] * window_values[i];
+                    }
+                } else {
+                    for i in 0..valid_samples {
+                        frame[i] = signal_array[[b, start_idx + i, 0]] * window_values[i];
+                    }
+                }
+
+                compute_dft(&frame, is_complex, frame_length_value, &mut output.slice_mut(ndarray::s![b, f, .., ..]).into_dyn());
             } else {
-                real_sum += frame[t] * cos_val;
-                imag_sum += frame[t] * sin_val;
+                // Extract frame and apply window
+                let mut frame = vec![0.0; frame_length_value * channels];
+
+                if is_complex {
+                    for i in 0..frame_length_value {
+                        frame[i * 2] = signal_array[[b, start_idx + i, 0]] * window_values[i];
+                        frame[i * 2 + 1] = signal_array[[b, start_idx + i, 1]] * window_values[i];
+                    }
+                } else {
+                    for i in 0..frame_length_value {
+                        frame[i] = signal_array[[b, start_idx + i, 0]] * window_values[i];
+                    }
+                }
+
+                compute_dft(&frame, is_complex, frame_length_value, &mut output.slice_mut(ndarray::s![b, f, .., ..]).into_dyn());
             }
         }
-        
-        output[[k, 0]] = real_sum;
-        output[[k, 1]] = imag_sum;
     }
-};
 
-// Process each batch and frame
-for b in 0..batch_size {
-    for f in 0..frames {
-        let start_idx = f * frame_step_value;
-        let end_idx = start_idx + frame_length_value;
-        
-        if end_idx > signal_length {
-            // Zero-pad if frame extends beyond signal
-            let mut frame = vec![0.0; frame_length_value * channels];
-            let valid_samples = signal_length - start_idx;
-            
-            if is_complex {
-                for i in 0..valid_samples {
-                    frame[i * 2] = signal_array[[b, start_idx + i, 0]] * window_values[i];
-                    frame[i * 2 + 1] = signal_array[[b, start_idx + i, 1]] * window_values[i];
-                }
-            } else {
-                for i in 0..valid_samples {
-                    frame[i] = signal_array[[b, start_idx + i, 0]] * window_values[i];
-                }
-            }
-            
-            compute_dft(&frame, is_complex, frame_length_value, &mut &mut output.slice_mut(ndarray::s![b, f, .., ..]).into_dyn());
-        } else {
-            // Extract frame and apply window
-            let mut frame = vec![0.0; frame_length_value * channels];
-            
-            if is_complex {
-                for i in 0..frame_length_value {
-                    frame[i * 2] = signal_array[[b, start_idx + i, 0]] * window_values[i];
-                    frame[i * 2 + 1] = signal_array[[b, start_idx + i, 1]] * window_values[i];
-                }
-            } else {
-                for i in 0..frame_length_value {
-                    frame[i] = signal_array[[b, start_idx + i, 0]] * window_values[i];
-                }
-            }
-            
-            compute_dft(&frame, is_complex, frame_length_value, &mut output.slice_mut(ndarray::s![b, f, .., ..]).into_dyn());
-        }
-    }
+    Ok(ndarray_to_ort(ArrayDResult::Float(output), input_dtype))
 }
-
-Ok(ndarray_to_ort(ArrayDResult::Float(output), input_dtype))
-        
-    }
-
 
     }
 

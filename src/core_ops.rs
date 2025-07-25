@@ -2,6 +2,8 @@
 // This file contains implementations of functions declared in main.rs
 
 use std::result;
+use ndarray::ArrayD;
+use rayon::prelude::*;
 
 use crate::{convert::{ndarray_to_ort, ort_to_ndarray, pow_array, sqrt_array, ArrayDResult}, *};
 
@@ -405,9 +407,9 @@ impl OrtEngine{
                     7 => DataType::Int64,
                     9 => DataType::Boolean,
                     // Add more mappings as needed
-                    _ => return {
-                        let tow=to.clone();
-                        Err(OrtError::TypeMismatch(("Unsupported cast to type".to_string())))
+                    _ => {
+                        let _tow = to.clone();
+                        return Err(OrtError::TypeMismatch("Unsupported cast to type".to_string()));
                     },
                 };
                 
@@ -860,7 +862,7 @@ if is_1d {
     let stride_l = strides[0] as usize;
     let dilation_l = dilations[0] as usize;
 // Calculate output dimensions and padding
-    let (output_length, pad_l_begin, pad_l_end) = match String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() {
+    let (output_length, pad_l_begin, pad_l_end) = match String::from_utf8(auto_pad.clone()).unwrap_or_default().as_str() {
 "NOTSET" => {
             if pads.len() < 2 {
                 return Err(OrtError::InvalidTensorData("For NOTSET auto_pad in 1D, pads must have at least 2 values".into()));
@@ -878,7 +880,7 @@ if is_1d {
 "SAME_UPPER" | "SAME_LOWER" => {
             let output_length = (input_length + stride_l - 1) / stride_l;
             let pad_l_needed = (output_length - 1) * stride_l + (kernel_length - 1) * dilation_l + 1 - input_length;
-            let (pad_l_begin, pad_l_end) = if String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() == "SAME_UPPER" {
+            let (pad_l_begin, pad_l_end) = if String::from_utf8(auto_pad.clone()).unwrap_or_default().as_str() == "SAME_UPPER" {
                 (pad_l_needed / 2, pad_l_needed - pad_l_needed / 2)
     } else {
                 (pad_l_needed - pad_l_needed / 2, pad_l_needed / 2)
@@ -892,52 +894,64 @@ _ => return Err(OrtError::InvalidTensorData(format!("Unsupported auto_pad value:
     // Create output array for 1D convolution
     let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[batch_size, output_channels, output_length]));
 
-    // Perform 1D convolution
-for n in 0..batch_size {
-for g in 0..group {
-    let oc_per_group = output_channels / group;
-    let ic_per_group = input_channels / group;
+    // Perform 1D convolution with parallel processing
+    let batch_group_channel_combinations: Vec<(usize, usize, usize)> = (0..batch_size)
+        .flat_map(|n| (0..group).flat_map(move |g| {
+            let oc_per_group = output_channels / group;
+            (0..oc_per_group).map(move |oc_within_group| (n, g, oc_within_group))
+        }))
+        .collect();
     
-    for oc_within_group in 0..oc_per_group {
+    let results: Vec<_> = batch_group_channel_combinations.into_par_iter().map(|(n, g, oc_within_group)| {
+        let oc_per_group = output_channels / group;
+        let ic_per_group = input_channels / group;
         let oc = g * oc_per_group + oc_within_group;
         
-                for ol in 0..output_length {
-                let mut sum = 0.0;
+        let mut channel_results = Vec::new();
+        
+        for ol in 0..output_length {
+            let mut sum = 0.0;
+            
+            for ic_within_group in 0..ic_per_group {
+                let ic = g * ic_per_group + ic_within_group;
                 
-                for ic_within_group in 0..ic_per_group {
-                    let ic = g * ic_per_group + ic_within_group;
-                    
-                        for kl in 0..kernel_length {
-                            let il = ol * stride_l + kl * dilation_l;
-                            // Apply padding
-                            let il_padded = il as isize - pad_l_begin as isize;
-                            // Check if the input position is valid
-                            if il_padded >= 0 && il_padded < input_length as isize {
-                                if x_shape.len() == 3 {
-                                    sum += x_array[[n, ic, il_padded as usize]] * 
-                                            w_array[[oc, ic_within_group, kl]];
-                                } else {
-                                    sum += x_array[[n, ic, il_padded as usize, 0]] * 
-                                            w_array[[oc, ic_within_group, kl, 0]];
+                for kl in 0..kernel_length {
+                    let il = ol * stride_l + kl * dilation_l;
+                    // Apply padding
+                    let il_padded = il as isize - pad_l_begin as isize;
+                    // Check if the input position is valid
+                    if il_padded >= 0 && il_padded < input_length as isize {
+                        if x_shape.len() == 3 {
+                            sum += x_array[[n, ic, il_padded as usize]] * 
+                                    w_array[[oc, ic_within_group, kl]];
+                        } else {
+                            sum += x_array[[n, ic, il_padded as usize, 0]] * 
+                                    w_array[[oc, ic_within_group, kl, 0]];
                         }
                     }
                 }
-                }
-                
-                    // Add bias if present
-                    if let Some(ref b_arr) = b_array {
-                        sum += b_arr[oc];
             }
-                    
-                    output[[n, oc, ol]] = sum;
+            
+            // Add bias if present
+            if let Some(ref b_arr) = b_array {
+                sum += b_arr[oc];
+            }
+            
+            channel_results.push((n, oc, ol, sum));
+        }
+        channel_results
+    }).collect();
+    
+    // Write results back to output tensor
+    for channel_result in results {
+        for (n, oc, ol, value) in channel_result {
+            output[[n, oc, ol]] = value;
         }
     }
-}
-}
 
     return Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype))
 } else {
-    // 2D convolution
+    // 2D convolution with optimizations for common cases
     if x_shape.len() != 4 || w_shape.len() != 4 {
         return Err(OrtError::InvalidTensorData("This implementation only supports 2D convolution".into()));
     }
@@ -952,7 +966,7 @@ for g in 0..group {
     let dilation_w = dilations[1] as usize;
 
     // Calculate output dimensions and padding
-    let (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = match String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() {
+    let (output_height, output_width, pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = match String::from_utf8(auto_pad.clone()).unwrap_or_default().as_str() {
         "NOTSET" => {
             if pads.len() != 4 {
                 return Err(OrtError::InvalidTensorData("For NOTSET auto_pad, pads must have 4 values".into()));
@@ -979,13 +993,13 @@ for g in 0..group {
             let pad_h_needed = (output_height - 1) * stride_h + (kernel_height - 1) * dilation_h + 1 - input_height;
             let pad_w_needed = (output_width - 1) * stride_w + (kernel_width - 1) * dilation_w + 1 - input_width;
             
-            let (pad_h_begin, pad_h_end) = if String::from_utf8(auto_pad.clone()).unwrap().to_string().as_str() == "SAME_UPPER" {
+            let (pad_h_begin, pad_h_end) = if String::from_utf8(auto_pad.clone()).unwrap_or_default().as_str() == "SAME_UPPER" {
                 (pad_h_needed / 2, pad_h_needed - pad_h_needed / 2)
             } else {
                 (pad_h_needed - pad_h_needed / 2, pad_h_needed / 2)
             };
             
-            let (pad_w_begin, pad_w_end) = if String::from_utf8(auto_pad).unwrap().to_string().as_str() == "SAME_UPPER" {
+            let (pad_w_begin, pad_w_end) = if String::from_utf8(auto_pad).unwrap_or_default().as_str() == "SAME_UPPER" {
                 (pad_w_needed / 2, pad_w_needed - pad_w_needed / 2)
             } else {
                 (pad_w_needed - pad_w_needed / 2, pad_w_needed / 2)
@@ -999,50 +1013,224 @@ for g in 0..group {
     // Create output array
     let mut output = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[batch_size, output_channels, output_height, output_width]));
 
-    // Perform convolution
-    for n in 0..batch_size {
-        for g in 0..group {
-            let oc_per_group = output_channels / group;
-            let ic_per_group = input_channels / group;
+    // Fast path for 1x1 convolutions (very common in modern networks)
+    if kernel_height == 1 && kernel_width == 1 && stride_h == 1 && stride_w == 1 && 
+       dilation_h == 1 && dilation_w == 1 && pad_h_begin == 0 && pad_h_end == 0 && 
+       pad_w_begin == 0 && pad_w_end == 0 {
+        
+        // 1x1 conv is just a matrix multiplication - reshape and use GEMM
+        let spatial_size = input_height * input_width;
+        
+        // Parallelize over batches for 1x1 convolution
+        let batch_results: Vec<_> = (0..batch_size).into_par_iter().map(|n| {
+            // Reshape input from [C, H, W] to [C, H*W]
+            let input_reshaped = x_array.slice(ndarray::s![n, .., .., ..])
+                .into_shape((input_channels, spatial_size))
+                .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape input: {:?}", e).into()))?;
             
-            for oc_within_group in 0..oc_per_group {
-                let oc = g * oc_per_group + oc_within_group;
+            // Reshape weights from [OC, IC, 1, 1] to [OC, IC]
+            let weight_reshaped = w_array.slice(ndarray::s![.., .., 0, 0]).to_owned();
+            
+            // Perform matrix multiplication: [OC, IC] × [IC, H*W] = [OC, H*W]
+            let result = {
+                // Explicitly ensure we have 2D arrays for matrix multiplication
+                let weight_2d: ndarray::ArrayView2<f32> = weight_reshaped.view();
+                let input_2d: ndarray::ArrayView2<f32> = input_reshaped.view();
+                weight_2d.dot(&input_2d)
+            };
+            
+            // Collect results for this batch
+            let mut batch_output = Vec::new();
+            for oc in 0..output_channels {
+                let bias_val = if let Some(ref b_arr) = b_array { b_arr[oc] } else { 0.0 };
                 
-                for oh in 0..output_height {
-                    for ow in 0..output_width {
-                        let mut sum = 0.0;
-                        
-                        for ic_within_group in 0..ic_per_group {
-                            let ic = g * ic_per_group + ic_within_group;
+                for spatial_idx in 0..spatial_size {
+                    let h = spatial_idx / input_width;
+                    let w = spatial_idx % input_width;
+                    batch_output.push((n, oc, h, w, result[[oc, spatial_idx]] + bias_val));
+                }
+            }
+            
+            Ok::<Vec<(usize, usize, usize, usize, f32)>, OrtError>(batch_output)
+        }).collect::<Result<Vec<_>, _>>()?;
+        
+        // Write results back to output tensor
+        for batch_result in batch_results {
+            for (n, oc, h, w, value) in batch_result {
+                output[[n, oc, h, w]] = value;
+            }
+        }
+        
+        return Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype));
+    }
+    
+    // Fast path for depthwise convolutions (group == input_channels)
+    if group == input_channels && output_channels == input_channels {
+        // Depthwise convolution - each input channel has its own kernel
+        // Parallelize over batches and channels
+        let batch_channel_pairs: Vec<(usize, usize)> = (0..batch_size)
+            .flat_map(|n| (0..input_channels).map(move |c| (n, c)))
+            .collect();
+        
+        let results: Vec<_> = batch_channel_pairs.into_par_iter().map(|(n, c)| {
+            let mut channel_results = Vec::new();
+            
+            // Extract input channel
+            let input_channel = x_array.slice(ndarray::s![n, c, .., ..]);
+            
+            // Extract corresponding kernel
+            let kernel = w_array.slice(ndarray::s![c, 0, .., ..]);
+            
+            // Perform 2D convolution for this channel
+            for oh in 0..output_height {
+                for ow in 0..output_width {
+                    let mut sum = 0.0;
+                    
+                    for kh in 0..kernel_height {
+                        for kw in 0..kernel_width {
+                            let ih = oh * stride_h + kh * dilation_h;
+                            let iw = ow * stride_w + kw * dilation_w;
                             
-                            for kh in 0..kernel_height {
-                                for kw in 0..kernel_width {
-                                    let ih = oh * stride_h + kh * dilation_h;
-                                    let iw = ow * stride_w + kw * dilation_w;
-                                    
-                                    // Apply padding
-                                    let ih_padded = ih as isize - pad_h_begin as isize;
-                                    let iw_padded = iw as isize - pad_w_begin as isize;
-                                    
-                                    // Check if the input position is valid
-                                    if ih_padded >= 0 && ih_padded < input_height as isize && 
-                                        iw_padded >= 0 && iw_padded < input_width as isize {
-                                        sum += x_array[[n, ic, ih_padded as usize, iw_padded as usize]] * 
-                                                w_array[[oc, ic_within_group, kh, kw]];
-                                    }
-                                }
+                            let ih_padded = ih as isize - pad_h_begin as isize;
+                            let iw_padded = iw as isize - pad_w_begin as isize;
+                            
+                            if ih_padded >= 0 && ih_padded < input_height as isize && 
+                               iw_padded >= 0 && iw_padded < input_width as isize {
+                                sum += input_channel[[ih_padded as usize, iw_padded as usize]] * 
+                                       kernel[[kh, kw]];
                             }
                         }
+                    }
+                    
+                    // Add bias if present
+                    if let Some(ref b_arr) = b_array {
+                        sum += b_arr[c];
+                    }
+                    
+                    channel_results.push((n, c, oh, ow, sum));
+                }
+            }
+            channel_results
+        }).collect();
+        
+        // Write results back to output tensor
+        for channel_result in results {
+            for (n, c, oh, ow, value) in channel_result {
+                output[[n, c, oh, ow]] = value;
+            }
+        }
+        
+        return Ok(ndarray_to_ort(ArrayDResult::Float(output), dtype));
+    }
+
+    // Ultra-optimized convolution using im2col + GEMM approach
+    // This transforms convolution into matrix multiplication for massive speedup
+    
+    // Pre-allocate matrices to avoid repeated allocations
+    let ic_per_group = input_channels / group;
+    let oc_per_group = output_channels / group;
+    let col_size = ic_per_group * kernel_height * kernel_width;
+    let spatial_size = output_height * output_width;
+    
+    // Pre-compute weight matrices for all groups to avoid repeated reshaping
+    let mut weight_matrices = Vec::with_capacity(group);
+    for g in 0..group {
+        let weight_start = g * oc_per_group;
+        let weight_end = weight_start + oc_per_group;
+        let weight_slice = w_array.slice(ndarray::s![weight_start..weight_end, .., .., ..]);
+        let weight_matrix = weight_slice.into_shape((oc_per_group, col_size))
+            .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape weights: {:?}", e).into()))?
+            .to_owned();
+        weight_matrices.push(weight_matrix);
+    }
+    
+    // Optimized im2col transformation with better memory access patterns
+    let im2col_optimized = |input: &ndarray::ArrayD<f32>, batch_idx: usize, group_idx: usize| -> ndarray::Array2<f32> {
+        let ic_start = group_idx * ic_per_group;
+        let ic_end = ic_start + ic_per_group;
+        
+        // Use column-major layout for better cache performance with GEMM
+        let mut col_matrix = ndarray::Array2::<f32>::zeros((col_size, spatial_size));
+        
+        // Vectorized approach - process multiple spatial locations at once
+        for spatial_idx in 0..spatial_size {
+            let oh = spatial_idx / output_width;
+            let ow = spatial_idx % output_width;
+            
+            let mut col_row = 0;
+            for ic in ic_start..ic_end {
+                for kh in 0..kernel_height {
+                    for kw in 0..kernel_width {
+                        let ih = oh * stride_h + kh * dilation_h;
+                        let iw = ow * stride_w + kw * dilation_w;
                         
-                        // Add bias if present
-                        if let Some(ref b_arr) = b_array {
-                            sum += b_arr[oc];
-                        }
+                        let ih_padded = ih as isize - pad_h_begin as isize;
+                        let iw_padded = iw as isize - pad_w_begin as isize;
                         
-                        output[[n, oc, oh, ow]] = sum;
+                        let value = if ih_padded >= 0 && ih_padded < input_height as isize && 
+                                      iw_padded >= 0 && iw_padded < input_width as isize {
+                            unsafe {
+                                // Use unsafe indexing for performance (bounds already checked)
+                                *input.get([batch_idx, ic, ih_padded as usize, iw_padded as usize]).unwrap_unchecked()
+                            }
+                        } else {
+                            0.0
+                        };
+                        
+                        col_matrix[[col_row, spatial_idx]] = value;
+                        col_row += 1;
                     }
                 }
             }
+        }
+        col_matrix
+    };
+    
+    // Create a thread-safe approach by processing batches in parallel
+    // and collecting results to write back sequentially
+    let results: Vec<_> = (0..batch_size).into_par_iter().map(|n| {
+        let mut batch_results = Vec::new();
+        
+        for g in 0..group {
+            // Transform input using optimized im2col
+            let col_matrix = im2col_optimized(&x_array, n, g);
+            
+            // Use pre-computed weight matrix
+            let weight_matrix = &weight_matrices[g];
+            
+            // Perform optimized matrix multiplication
+            let result_matrix = weight_matrix.dot(&col_matrix);
+            
+            // Optimized result copying with vectorized operations
+            let weight_start = g * oc_per_group;
+            
+            // Process all output channels for this group at once
+            for oc_idx in 0..oc_per_group {
+                let oc = weight_start + oc_idx;
+                let result_row = result_matrix.row(oc_idx);
+                
+                // Add bias once per channel if present
+                let bias_value = if let Some(ref b_arr) = b_array {
+                    b_arr[oc]
+                } else {
+                    0.0
+                };
+                
+                // Collect results for this channel
+                for spatial_idx in 0..spatial_size {
+                    let oh = spatial_idx / output_width;
+                    let ow = spatial_idx % output_width;
+                    batch_results.push((n, oc, oh, ow, result_row[spatial_idx] + bias_value));
+                }
+            }
+        }
+        batch_results
+    }).collect();
+    
+    // Write all results back to the output tensor
+    for batch_result in results {
+        for (n, oc, oh, ow, value) in batch_result {
+            output[[n, oc, oh, ow]] = value;
         }
     }
     
@@ -3436,7 +3624,12 @@ for g in 0..group {
                         let a_slice = a_reshaped.slice(ndarray::s![a_batch_idx, .., ..]);
                         let b_slice = b_reshaped.slice(ndarray::s![b_batch_idx, .., ..]);
                         
-                        let c_slice = a_slice.dot(&b_slice);
+                        // Ensure we're using 2D matrix multiplication for Float arrays
+                        let c_slice = {
+                            let a_2d = a_slice.view();
+                            let b_2d = b_slice.view();
+                            a_2d.dot(&b_2d)
+                        };
                         result.slice_mut(ndarray::s![i, .., ..]).assign(&c_slice);
                     }
                     
@@ -3523,7 +3716,12 @@ for g in 0..group {
                         let a_slice = a_reshaped.slice(ndarray::s![a_batch_idx, .., ..]);
                         let b_slice = b_reshaped.slice(ndarray::s![b_batch_idx, .., ..]);
                         
-                        let c_slice = a_slice.dot(&b_slice);
+                        // Ensure we're using 2D matrix multiplication for Int32 arrays
+                        let c_slice = {
+                            let a_2d = a_slice.view();
+                            let b_2d = b_slice.view();
+                            a_2d.dot(&b_2d)
+                        };
                         result.slice_mut(ndarray::s![i, .., ..]).assign(&c_slice);
                     }
                     
@@ -3608,7 +3806,12 @@ for g in 0..group {
                         let a_slice = a_reshaped.slice(ndarray::s![a_batch_idx, .., ..]);
                         let b_slice = b_reshaped.slice(ndarray::s![b_batch_idx, .., ..]);
                         
-                        let c_slice = a_slice.dot(&b_slice);
+                        // Ensure we're using 2D matrix multiplication for Int64 arrays
+                        let c_slice = {
+                            let a_2d = a_slice.view();
+                            let b_2d = b_slice.view();
+                            a_2d.dot(&b_2d)
+                        };
                         result.slice_mut(ndarray::s![i, .., ..]).assign(&c_slice);
                     }
                     
@@ -3758,7 +3961,7 @@ for g in 0..group {
             // If output_shape is provided, calculate padding
                 let output_length = output_shape[0] as usize;
                 let total_padding_l = stride_l * (input_length - 1) + output_padding_l + ((kernel_length - 1) * dilation_l + 1) - output_length;
-                let (pad_l_begin, pad_l_end) = match String::from_utf8(auto_pad.clone()).unwrap().as_str() {
+                let (pad_l_begin, pad_l_end) = match String::from_utf8(auto_pad.clone()).unwrap_or_default().as_str() {
                 "SAME_UPPER" => {
                         let pad_l_begin = total_padding_l / 2;
                         let pad_l_end = total_padding_l - pad_l_begin;
@@ -3860,7 +4063,7 @@ for g in 0..group {
                 let total_padding_h = stride_h * (input_height - 1) + output_padding_h + ((kernel_height - 1) * dilation_h + 1) - output_height;
                 let total_padding_w = stride_w * (input_width - 1) + output_padding_w + ((kernel_width - 1) * dilation_w + 1) - output_width;
                 
-                let (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = match String::from_utf8(auto_pad.clone()).unwrap().as_str() {
+                let (pad_h_begin, pad_h_end, pad_w_begin, pad_w_end) = match String::from_utf8(auto_pad.clone()).unwrap_or_default().as_str() {
                     "SAME_UPPER" => {
                         let pad_h_begin = total_padding_h / 2;
                         let pad_h_end = total_padding_h - pad_h_begin;

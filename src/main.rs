@@ -28,7 +28,7 @@ fn printall(){
 
 }
 
-mod test_optimizations;
+// mod test_optimizations;
 
 // Static counter for node indexing
 // static NODE_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -81,18 +81,14 @@ pub enum DataType {
     Boolean
 }
 
-impl DataType {
-    fn try_from(value: i32) -> Result<Self, OrtError> {
-        match value {
-            1 => Ok(DataType::Float),
-            6 => Ok(DataType::Int32),
-            7 => Ok(DataType::Int64),
-            8 => Ok(DataType::String),
-            9 => Ok(DataType::Boolean),
-            other => Err(OrtError::UnknownDataType(other)),
-        }
-    }
+mod convert;
+pub struct OrtEngine {
+    model: ModelProto,
+    node_registry: HashMap<String, fn(&NodeProto, &[OrtValue]) -> OrtResult<OrtValue>>,
+    vendor_ops: HashMap<String, fn(&[u8], &[OrtValue]) -> OrtResult<OrtValue>>,
+    shape_inference: ShapeInference, // Added
 }
+
 
 #[derive(Debug, Clone, Default)]
 pub struct TensorProto {
@@ -106,6 +102,8 @@ pub struct TensorProto {
     pub string_data: Vec<Vec<u8>>,
     pub raw_data: Vec<u8>,
 }
+
+
 
 #[derive(Debug, Clone, Default)]
 pub struct AttributeProto {
@@ -182,6 +180,52 @@ pub struct ModelProto {
     pub producer_name: String, // Added for tag 2
     pub producer_version: String, // Added for tag 3
 }
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionState {
+    // pub processed_nodes: HashSet<String>,
+    pub last_processed_index: usize,
+    // pub tensor_map_keys: Vec<String>, // Store only keys for serialization
+    pub incremental_tensors: HashMap<String, String>, // Maps tensor name to file path
+    // pub node_outputs: HashMap<String, Vec<String>>, // Maps node name to its output tensor names
+    pub tensor_to_node: HashMap<String, usize>, // Maps tensor name to the node index that produced it
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Dimensions {
+    Fixed(usize),
+    Symbolic(String),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum OrtValue {
+    Tensor {
+        
+        shape: Vec<Dimensions>,
+        dtype: DataType,
+        #[serde(with = "serde_arc_vec")]
+        data: Arc<Vec<u8>>,
+    },
+    Sequence(Vec<OrtValue>),
+    Map(IndexMap<MapKey, OrtValue>),
+    Opaque(Vec<u8>),
+}
+
+
+impl DataType {
+    fn try_from(value: i32) -> Result<Self, OrtError> {
+        match value {
+            1 => Ok(DataType::Float),
+            6 => Ok(DataType::Int32),
+            7 => Ok(DataType::Int64),
+            8 => Ok(DataType::String),
+            9 => Ok(DataType::Boolean),
+            other => Err(OrtError::UnknownDataType(other)),
+        }
+    }
+}
+
 // Implement Message trait for OpSetImport
 impl Message for OpSetImport {
     fn encode_raw<B: prost::bytes::BufMut>(&self, _buf: &mut B) {
@@ -812,21 +856,17 @@ pub enum OrtError {
 
 pub type OrtResult<T> = Result<T, OrtError>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionState {
-    pub processed_nodes: HashSet<String>,
-    pub last_processed_index: usize,
-    pub tensor_map_keys: Vec<String>, // Store only keys for serialization
-    pub incremental_tensors: HashMap<String, String>, // Maps tensor name to file path
-}
+
 
 impl ExecutionState {
     pub fn new() -> Self {
         Self {
-            processed_nodes: HashSet::new(),
+            // processed_nodes: HashSet::new(),
             last_processed_index: 0,
-            tensor_map_keys: Vec::new(),
+            // tensor_map_keys: Vec::new(),
             incremental_tensors: HashMap::new(),
+            // node_outputs: HashMap::new(),
+            tensor_to_node: HashMap::new(),
         }
     }
     
@@ -842,23 +882,27 @@ impl ExecutionState {
         Ok(state)
     }
     
-    // Save only new tensors incrementally
-    pub fn save_new_tensors(&mut self, new_tensors: &HashMap<String, OrtValue>, node_index: usize) -> Result<(), Box<dyn std::error::Error>> {
+    // Save only new tensors incrementally with node output tracking
+    pub fn save_new_tensors(&mut self, new_tensors: &HashMap<String, OrtValue>, node_index: usize, node_name: &str, output_names: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         if new_tensors.is_empty() {
             return Ok(());
         }
         
-        let tensor_file = format!("tensors_node_{}.bin", node_index);
+        let tensor_file = format!("./tensor_store/tensors_node_{}.bin", node_index);
         println!("Saving {} new tensors to {}", new_tensors.len(), tensor_file);
         
         match bincode::serialize(new_tensors) {
             Ok(serialized) => {
                 std::fs::write(&tensor_file, &serialized)?;
                 
-                // Update the incremental tensors map
+                // Update the incremental tensors map and tracking
                 for tensor_name in new_tensors.keys() {
                     self.incremental_tensors.insert(tensor_name.clone(), tensor_file.clone());
+                    self.tensor_to_node.insert(tensor_name.clone(), node_index);
                 }
+                
+                // Track node outputs
+                // self.node_outputs.insert(node_name.to_string(), output_names.to_vec());
                 
                 println!("✓ Saved {} tensors ({} bytes)", new_tensors.len(), serialized.len());
                 Ok(())
@@ -868,6 +912,66 @@ impl ExecutionState {
                 Err(Box::new(e))
             }
         }
+    }
+    
+    // Load specific tensors on demand
+    pub fn load_tensors_for_inputs(&self, input_names: &[String]) -> Result<HashMap<String, OrtValue>, Box<dyn std::error::Error>> {
+        let mut loaded_tensors = HashMap::new();
+        let mut files_to_load = HashSet::new();
+        
+        // Determine which files need to be loaded
+        for input_name in input_names {
+            if let Some(file_path) = self.incremental_tensors.get(input_name) {
+                files_to_load.insert(file_path.clone());
+            }
+        }
+        
+        // Load each required file
+        for file_path in files_to_load {
+            match std::fs::read(&file_path) {
+                Ok(data) => {
+                    match bincode::deserialize::<HashMap<String, OrtValue>>(&data) {
+                        Ok(file_tensors) => {
+                            // Only extract the tensors we need from this file
+                            for input_name in input_names {
+                                if let Some(tensor) = file_tensors.get(input_name) {
+                                    loaded_tensors.insert(input_name.clone(), tensor.clone());
+                                }
+                            }
+                            println!("✓ Loaded required tensors from {}", file_path);
+                        }
+                        Err(e) => {
+                            println!("✗ Failed to deserialize {}: {}", file_path, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("✗ Failed to read {}: {}", file_path, e);
+                }
+            }
+        }
+        
+        println!("Loaded {} tensors on demand", loaded_tensors.len());
+        Ok(loaded_tensors)
+    }
+    
+    // Get information about which node produced a tensor
+    pub fn get_tensor_producer(&self, tensor_name: &str) -> Option<usize> {
+        self.tensor_to_node.get(tensor_name).copied()
+    }
+    
+    // Get all outputs produced by a specific node
+    // pub fn get_node_outputs(&self, node_name: &str) -> Option<&Vec<String>> {
+    //     // self.node_outputs.get(node_name)
+    // }
+    
+    // Get statistics about the execution state
+    pub fn get_stats(&self) -> (usize) {
+        (
+            // self.processed_nodes.len(),
+            self.incremental_tensors.len()
+            // self.node_outputs.len()
+        )
     }
     
     // Load all tensors from incremental files
@@ -935,25 +1039,6 @@ impl ExecutionState {
             }
         }
     }
-}
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Dimensions {
-    Fixed(usize),
-    Symbolic(String),
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub enum OrtValue {
-    Tensor {
-        
-        shape: Vec<Dimensions>,
-        dtype: DataType,
-        #[serde(with = "serde_arc_vec")]
-        data: Arc<Vec<u8>>,
-    },
-    Sequence(Vec<OrtValue>),
-    Map(IndexMap<MapKey, OrtValue>),
-    Opaque(Vec<u8>),
 }
 
 impl fmt::Debug for OrtValue {
@@ -1384,13 +1469,6 @@ impl ShapeInference {
 }
 }
 
-mod convert;
-pub struct OrtEngine {
-    model: ModelProto,
-    node_registry: HashMap<String, fn(&NodeProto, &[OrtValue]) -> OrtResult<OrtValue>>,
-    vendor_ops: HashMap<String, fn(&[u8], &[OrtValue]) -> OrtResult<OrtValue>>,
-    shape_inference: ShapeInference, // Added
-}
 
 
 impl OrtEngine {
@@ -1447,7 +1525,7 @@ impl OrtEngine {
         // self.node_registry.insert("LSTM".into(), Self::op_lstm);
         self.node_registry.insert("ReduceSum".into(), Self::op_reduce_sum);
         self.node_registry.insert("Clip".into(), Self::op_clip);
-        // self.node_registry.insert("Resize".into(), Self::op_resize);
+        self.node_registry.insert("Resize".into(), Self::op_resize);
         self.node_registry.insert("Floor".into(), Self::op_floor);
         self.node_registry.insert("Cos".into(), Self::op_cos);
         self.node_registry.insert("Concat".into(), Self::op_concat);
@@ -1512,7 +1590,7 @@ impl OrtEngine {
         self.node_registry.insert("Conv".into(), Self::op_conv_optimized);
         self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose_optimized);
         self.node_registry.insert("LSTM".into(), Self::op_lstm_optimized);
-        self.node_registry.insert("Resize".into(), Self::op_resize_optimized);
+        // self.node_registry.insert("Resize".into(), Self::op_resize_optimized);
         self.node_registry.insert("STFT".into(), Self::op_stft_optimized);
         
         // Keep original versions available with different names for fallback
@@ -1586,7 +1664,7 @@ impl OrtEngine {
 
         // Load or create execution state
         let state_file_path = state_file.unwrap_or("execution_state2.json");
-        let tensor_map_path = "tensor_map2.bin";
+        // let tensor_map_path = "tensor_map2.bin";
         let mut execution_state = if let Ok(state) = ExecutionState::load_from_file(state_file_path) {
             println!("Resuming from node index: {}", state.last_processed_index);
             state
@@ -1598,72 +1676,30 @@ impl OrtEngine {
         // let mut shape_inference = ShapeInference::new(graph);
         // shape_inference.infer_shapes(&inputs)?;
     
-        let mut tensor_map: HashMap<String, OrtValue> = if execution_state.last_processed_index > 0 {
-            // Try to load existing tensor map using incremental loading
-            match execution_state.load_incremental_tensors() {
-                Ok(loaded_map) => {
-                    println!("Loaded tensor map with {} entries from incremental storage", loaded_map.len());
-                    loaded_map
-                }
-                Err(e) => {
-                    println!("Failed to load incremental tensors, trying legacy: {}", e);
-                    // Fallback to legacy loading
-                    match execution_state.load_tensor_map(tensor_map_path) {
-                        Ok(loaded_map) => {
-                            println!("Loaded tensor map with {} entries from legacy storage", loaded_map.len());
-                            loaded_map
-                        }
-                        Err(e2) => {
-                            println!("Failed to load tensor map, rebuilding: {}", e2);
-                            HashMap::new()
-                        }
-                    }
-                }
-            }
-        } else {
-            HashMap::new()
-        };
+        // Initialize tensor map with only initializers and inputs (no lazy loading of intermediate tensors yet)
+        let mut tensor_map: HashMap<String, OrtValue> = HashMap::new();
         
-        // Only load initializers if we're starting fresh or failed to load tensor map
-        println!("-------------------------..................>>>>>>>>{}",tensor_map.len());
-        for eachname in tensor_map.clone(){
-            println!("{}",eachname.0);
-        }
-        // if tensor_map.is_empty() {
-            // println!("starting inference2");
-            // Load all initializers into tensor_map
-            for tensor in &graph.initializer {
-            // if tensor.name.contains("/encoder/bert/embeddings/token_type_embeddings/Constant_output_0"){
-            //     println!("-----------------------------------------------------------------");
-            //     println!("-----------------------------------------------------------------");
-            //     println!("-----------------------------------------------------------------");
-            //     println!("-----------------------------------------------------------------");
-            //     println!("{:?}",tensor);
-            //     println!("-----------------------------------------------------------------");
-            //     println!("-----------------------------------------------------------------");
-            //     println!("-----------------------------------------------------------------");
-            //     println!("-----------------------------------------------------------------");
-                
-                
-            // }
-
+        // Load all initializers into tensor_map (these are always needed)
+        println!("Loading initializers...");
+        for tensor in &graph.initializer {
             if !tensor.name.is_empty() {
                 match self.parse_tensor(tensor) {
                     Ok(parsed_tensor) => {
                         tensor_map.insert(tensor.name.clone(), parsed_tensor);
-                        // println!("{:?}",tensor_map);
                     }
                     Err(e) => {
                         eprintln!("Warning: Failed to parse initializer {}: {:?}", tensor.name, e);
-                        // Continue to allow partial parsing; skip invalid initializers
                     }
                 }
             }
         }
+        
         // Add user-provided inputs, overriding initializers if provided
         for (name, value) in inputs {
             tensor_map.insert(name, value);
         }
+        
+        println!("Initialized tensor map with {} entries (initializers + inputs)", tensor_map.len());
             
         // } else {
             // If resuming, only add user inputs that aren't already in tensor_map
@@ -1692,59 +1728,78 @@ impl OrtEngine {
             
         for (node_index, node) in graph.node.iter().enumerate() {
             // Skip already processed nodes
-            if node_index < execution_state.last_processed_index-1 {
-                println!("Skipping already processed node {}: {} ({})", node_index, node.name, node.op_type);
+            if node_index < execution_state.last_processed_index {
+                // println!("Skipping already processed node {}: {} ({})", node_index, node.name, node.op_type);
                 continue;
             }
             let start_time = std::time::Instant::now();
             
-            // i+=1;
             if node.output.is_empty() {
                 return Err(OrtError::InvalidModel);
             }
+            
+            // Lazy load required tensors for this node's inputs
+            let required_inputs: Vec<String> = node.input.iter()
+                .filter(|name| !name.is_empty())
+                .cloned()
+                .collect();
+            
+            // Load any missing tensors from disk
+            let missing_inputs: Vec<String> = required_inputs.iter()
+                .filter(|name| !tensor_map.contains_key(*name))
+                .cloned()
+                .collect();
+            
+            if !missing_inputs.is_empty() {
+                println!("Loading {} missing tensors for node {}: {:?}", missing_inputs.len(), node.name, missing_inputs);
+                match execution_state.load_tensors_for_inputs(&missing_inputs) {
+                    Ok(loaded_tensors) => {
+                        for (name, tensor) in loaded_tensors {
+                            tensor_map.insert(name, tensor);
+                        }
+                        println!("✓ Loaded {} tensors on demand", missing_inputs.len());
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to load some tensors: {}", e);
+                    }
+                }
+            }
+            
             // Collect inputs for the node, allowing for optional inputs
             let node_inputs_p = node.input.clone();
-            println!("{:?}---{:?}",node,node_inputs_p);
-            let node_inputs=node_inputs_p
-            .iter().enumerate().map(|(index, name)| {
-                if name.is_empty() {
-                    // Check if this is at the end of the input list
-                    let is_last = index == node.input.len() - 1;
-                    let is_followed_by_empty = node.input.iter().skip(index + 1).all(|n| n.is_empty());
-                    
-                    if is_last || is_followed_by_empty {
-                        // Ignore empty-named inputs at the end
-                        Ok(None)
+            // println!("Processing node {}: {:?}==========================={:?}", node_index, node,node_inputs_p);
+            let jio=node;
+            println!("{:?}------------====",jio.output);
+            let node_inputs = node_inputs_p
+                .iter().enumerate().map(|(index, name)| {
+                    if name.is_empty() {
+                        // Check if this is at the end of the input list
+                        let is_last = index == node.input.len() - 1;
+                        let is_followed_by_empty = node.input.iter().skip(index + 1).all(|n| n.is_empty());
+                        
+                        if is_last || is_followed_by_empty {
+                            // Ignore empty-named inputs at the end
+                            Ok(None)
+                        } else {
+                            Ok(Some(OrtValue::Tensor {
+                                shape: vec![], // Scalar tensor for empty input
+                                dtype: DataType::Float,
+                                data: Arc::new(vec![]), // Empty data
+                            }))
+                        }
                     } else {
-                        // Get data type from model.graph.input by index
-                        // let dtype = model.graph.input.get(index)
-                        //     .and_then(|input| input.type_info.as_ref())
-                        //     .and_then(|type_info| type_info.tensor_type.as_ref())
-                        //     .map(|tensor_type| convert_onnx_type_to_ort(tensor_type.elem_type))
-                        //     .unwrap_or_else(|| {
-                        //         eprintln!("Warning: Cannot determine data type for input at index {}. Using default Float32.", index);
-                        //         DataType::Float
-                        //     });
-                        Ok(Some(OrtValue::Tensor {
-                            shape: vec![], // Scalar tensor for empty input
-                            dtype: DataType::Float,
-                            data: Arc::new(vec![]), // Empty data
-                        }))
+                        // Handle required inputs
+                        tensor_map
+                            .get(name)
+                            .cloned()
+                            .ok_or_else(|| OrtError::MissingInput(format!("Required input missing for node {}: {}", node.name, name)))
+                            .map(Some)
                     }
-                } else {
-                    // Handle required inputs
-                    tensor_map
-                        .get(name)
-                        .cloned()
-                        .ok_or_else(|| OrtError::MissingInput(format!("Required input missing for node {}: {}", node.name, name)))
-                        .map(Some)
-                }
-            })
-            .collect::<OrtResult<Vec<Option<OrtValue>>>>()?;
-    
+                })
+                .collect::<OrtResult<Vec<Option<OrtValue>>>>()?;
+        
             // Filter out None values (optional inputs)
             let node_inputs: Vec<OrtValue> = node_inputs.into_iter().flatten().collect();
-                    println!("{:?}---{:?}",node,node_inputs);
     
             let output = if let Some(op) = self.node_registry.get(&node.op_type) {
                 // if node.op_type == "Gather"{
@@ -1770,6 +1825,7 @@ impl OrtEngine {
             if node.output.len() == 1 {
                 new_tensors.insert(node.output[0].clone(), output.clone());
                 tensor_map.insert(node.output[0].clone(), output);
+                execution_state.tensor_to_node.insert(node.output[0].clone(), node_index);
             } else {
                 // If the operator returns multiple outputs, assume output is a Vec<OrtValue>
                 if let OrtValue::Sequence(outputs) = output {
@@ -1779,6 +1835,7 @@ impl OrtEngine {
                     for (out_name, out_value) in node.output.iter().zip(outputs.into_iter()) {
                         new_tensors.insert(out_name.clone(), out_value.clone());
                         tensor_map.insert(out_name.clone(), out_value);
+                        execution_state.tensor_to_node.insert(out_name.clone(), node_index);
                     }
                 } else {
                     return Err(OrtError::TypeMismatch(format!("Expected multiple outputs but got single value")));
@@ -1793,12 +1850,12 @@ impl OrtEngine {
                 node.name, node.op_type, elapsed, new_tensor_count, tensor_count_after, started_at.elapsed());
             
             // Update execution state
-            execution_state.processed_nodes.insert(node.name.clone());
+            // execution_state.processed_nodes.insert(node.name.clone());
             execution_state.last_processed_index = node_index + 1;
-            execution_state.tensor_map_keys = tensor_map.keys().cloned().collect();
+            // execution_state.tensor_map_keys = tensor_map.keys().cloned().collect();
             
-            // Save only new tensors incrementally (much more efficient)
-            if let Err(e) = execution_state.save_new_tensors(&new_tensors, node_index) {
+            // Save only new tensors incrementally with output tracking
+            if let Err(e) = execution_state.save_new_tensors(&new_tensors, node_index, &node.name, &node.output) {
                 eprintln!("ERROR: Failed to save new tensors: {}", e);
             }
             
@@ -1839,9 +1896,9 @@ impl OrtEngine {
         if let Err(e) = std::fs::remove_file(state_file_path) {
             eprintln!("Warning: Failed to clean up state file: {}", e);
         }
-        if let Err(e) = std::fs::remove_file(tensor_map_path) {
-            eprintln!("Warning: Failed to clean up tensor map file: {}", e);
-        }
+        // if let Err(e) = std::fs::remove_file(tensor_map_path) {
+        //     eprintln!("Warning: Failed to clean up tensor map file: {}", e);
+        // }
         
         // Clean up incremental tensor files
         Self::cleanup_incremental_tensors(&execution_state);

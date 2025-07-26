@@ -727,6 +727,7 @@ data: Arc::new(output_data),
 
 
     pub fn op_conv(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        println!("Using old method");
 // Check if we have the required inputs
 if inputs.len() < 2 {
 return Err(OrtError::InvalidTensorData("Conv requires at least input and weight tensors".into()));
@@ -3832,6 +3833,7 @@ _ => return Err(OrtError::InvalidTensorData(format!("Unsupported auto_pad value:
 
 
     pub fn op_conv_transpose(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        println!("Using old method");
         // Get the input tensors
         let x = inputs.get(0).ok_or_else(|| OrtError::InvalidTensorData("ConvTranspose requires input tensor X".into()))?;
         let w = inputs.get(1).ok_or_else(|| OrtError::InvalidTensorData("ConvTranspose requires weight tensor W".into()))?;
@@ -4543,7 +4545,7 @@ _ => return Err(OrtError::InvalidTensorData(format!("Unsupported auto_pad value:
         // Convert inputs to ndarrays
         let data_array = ort_to_ndarray(data)?;
         let indices_array = ort_to_ndarray(indices)?;
-        println!("--------data============{:?}------------------index============={:?}",data_array,indices_array);
+        // println!("--------data============{:?}-------------  -----index============={:?}",data_array,indices_array);
         // Get the rank of the input tensor
         let r = input_shape.len();
 
@@ -5575,6 +5577,7 @@ match (a_array, b_array, c_array) {
     
     
     pub fn op_lstm(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        println!("Using old method");
             // Get the input tensors
             let x = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("LSTM requires input tensor X".to_string()))?;
             let w = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("LSTM requires weight tensor W".to_string()))?;
@@ -6603,6 +6606,7 @@ vec![
     }
 
     pub fn op_resize(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+        println!("Using old method");
             // Get the input tensors
             let x = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Resize requires input tensor X".to_string()))?;
             let roi = inputs.get(1);
@@ -8645,6 +8649,7 @@ Ok(ndarray_to_ort(ArrayDResult::Float(output), input_dtype))
 
 
 pub fn op_stft(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
+    println!("Using old method");
     // Get the input tensors
     let signal = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("STFT requires signal tensor".to_string()))?;
     let frame_step = inputs.get(1).ok_or_else(|| OrtError::TypeMismatch("STFT requires frame_step tensor".to_string()))?;

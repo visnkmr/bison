@@ -596,7 +596,7 @@ impl Div for ArrayDResult {
 pub fn ndarray_to_ort(array: ArrayDResult, dtype: DataType) -> OrtValue {
     let (shape,data)=match(array){
         ArrayDResult::Float(array_base) => {
-                        (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),array_base.into_raw_vec()
+                        (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect() ,array_base.into_raw_vec()
                         .into_iter()
                         .flat_map(|x| x.to_le_bytes())
                         .collect())
@@ -621,13 +621,16 @@ pub fn ndarray_to_ort(array: ArrayDResult, dtype: DataType) -> OrtValue {
             
         },
                     };
+                    let shape_ret: Vec<Dimensions>=shape;
     let result=OrtValue::Tensor {
-        shape,
+        shape:shape_ret.clone(),
         dtype,
         data: Arc::new(data),
     };
     // println!("Outut-->====={:?}",result);
-    // println!("Outut-->datatype====={:?}========shape====={:?}",shape,dtype);
+    println!("{:?}",shape_ret);
+    println!("{:?}",dtype);
+    // println!("Outut-->datatype====={:?}========shape====={:?}",shape_ret,dtype);
     result
 }
 
@@ -662,7 +665,8 @@ pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
                 Dimensions::Fixed(n) => *n,
                 Dimensions::Symbolic(_) => unreachable!(), // Handled above
             }).collect();
-            // println!("Input-->datatype====={:?}========shape====={:?}",shape,dtype);
+            // println!("Input-->F=={:?}========shape====={:?}",shape,dtype);
+            
             let result = match dtype {
                 DataType::Float => {
                     let float_data: Vec<f32> = data
@@ -4982,5 +4986,7 @@ fn test_op_resize_asymmetric_nearest_floor() {
         _ => panic!("Expected float array"),
     }
 }
+
+
 
 }

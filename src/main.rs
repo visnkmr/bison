@@ -46,8 +46,134 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
-use ndarray::{Array, Array2, Array3, Array4, ArrayD, Axis, Dimension, Zip};
+use ndarray::{Array, Array2, Array3, Array4, ArrayD, Axis, Dimension, IxDyn, Zip};
 use num_traits::{Float, ToBytes};
+
+use crate::convert::ArrayDResult;
+
+// Function to print tensor information in Python format
+fn print_tensor_info(output_name: &str, tensor_value: &OrtValue) {
+    match tensor_value {
+        OrtValue::Tensor { shape, dtype, data } => {
+            // Convert shape to display format
+            let shape_str = shape.iter()
+                .map(|dim| match dim {
+                    Dimensions::Fixed(size) => size.to_string(),
+                    Dimensions::Symbolic(name) => name.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            
+            // Get data type string
+            let dtype_str = match dtype {
+                DataType::Float => "float32",
+                DataType::Int64 => "int64", 
+                DataType::Int32 => "int32",
+                DataType::String => "string",
+                DataType::Boolean => "bool",
+            };
+            
+            // Get sample values (first 3 elements)
+            let sample_values = get_sample_values(data, dtype,false);
+            
+            println!("Node '{}':", output_name);
+            println!("  Shape: ({})", shape_str);
+            println!("  Data type: {}", dtype_str);
+            println!("  Sample values: {}", sample_values);
+        }
+        _ => {
+            println!("Node '{}':", output_name);
+            println!("  Type: Non-tensor value");
+        }
+    }
+}
+
+// Helper function to extract sample values from tensor data
+fn get_sample_values(data: &Arc<Vec<u8>>, dtype: &DataType,fulloutput:bool) -> String {
+    if data.is_empty() {
+        return "Empty".to_string();
+    }
+    
+    // match dtype {
+    //     DataType::Float => {
+    //         // let float_data = bytemuck::cast_slice::<u8, f32>(data);
+    //         // let samples: Vec<String> = float_data.iter()
+    //         //     .take(3)
+    //         //     .map(|x| format!("{:?}", x))
+    //         //     .collect();
+    //         // format!("[{}]", samples.join(" "))
+    //         format!("{:?}",data)
+    //     }
+    //     DataType::Int64 => {
+    //         let int_data = bytemuck::cast_slice::<u8, i64>(data);
+    //         let samples: Vec<String> = int_data.iter()
+    //             .take(3)
+    //             .map(|x| x.to_string())
+    //             .collect();
+    //         format!("[{}]", samples.join(" "))
+    //     }
+    //     DataType::Int32 => {
+    //         let int_data = bytemuck::cast_slice::<u8, i32>(data);
+    //         let samples: Vec<String> = int_data.iter()
+    //             .take(3)
+    //             .map(|x| x.to_string())
+    //             .collect();
+    //         format!("[{}]", samples.join(" "))
+    //     }
+    //     DataType::String => {
+    //         "String data".to_string()
+    //     }
+    //     DataType::Boolean => {
+    //         let samples: Vec<String> = data.iter()
+    //             .take(3)
+    //             .map(|&x| if x != 0 { "true" } else { "false" }.to_string())
+    //             .collect();
+    //         format!("[{}]", samples.join(" "))
+    //     }
+    // }
+    
+    match dtype {
+        DataType::Float => {
+            let float_data: Vec<f32> = data
+                .chunks(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            let takehowmany=if fulloutput{
+                float_data.len()
+            }
+            else{
+                3
+            };
+            let samples: Vec<String> = float_data.iter()
+                .take(3)
+                .map(|x| format!("{:?}", x))
+                .collect();
+            
+                format!("[{}]", samples.join(" "))
+        }
+        DataType::Int64 => {
+            let int_data: Vec<i64> = data
+                .chunks(8)
+                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+        let samples: Vec<String> = int_data.iter()
+                .take(3)
+                .map(|x| x.to_string())
+                .collect();
+            format!("[{}]", samples.join(" "))
+        }
+        DataType::Int32 => {
+            let int_data: Vec<i32> = data
+                .chunks(4)
+            format!("[{}]", samples.join(" "))
+        }
+            
+        }
+        _ => {
+            "Unknown data type".to_string()
+        }
+    }
+}
 
 // use crate::ndarray_to_ort::SupportedType;
 
@@ -1044,11 +1170,60 @@ impl ExecutionState {
 impl fmt::Debug for OrtValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OrtValue::Tensor { shape, dtype, .. } => f
+            OrtValue::Tensor { shape, dtype, data } =>{ 
+            //     let concrete_shape: Vec<usize> = shape.iter().map(|d| match d {
+            //         Dimensions::Fixed(n) => *n,
+            //         Dimensions::Symbolic(_) => unreachable!(), // Handled above
+            //     }).collect();
+            // let result = match dtype {
+            //     DataType::Float => {
+            //         let float_data: Vec<f32> = data
+            //             .chunks(4)
+            //             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            //             .collect();
+            //         ArrayD::from_shape_vec(IxDyn(&concrete_shape), float_data)
+            //             .map(|arr| ArrayDResult::Float(arr))
+            //             .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for float tensor".into()))
+            //     }
+            //     DataType::Int64 => {
+            //         let int64_data: Vec<i64> = data
+            //             .chunks(8)
+            //             .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            //             .collect();
+            //         ArrayD::from_shape_vec(IxDyn(&concrete_shape), int64_data)
+            //             .map(|arr| ArrayDResult::Int64(arr))
+            //             .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for int64 tensor".into()))
+            //     }
+            //     DataType::Int32 => {
+            //         let int32_data: Vec<i32> = data
+            //             .chunks(4)
+            //             .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+            //             .collect();
+            //         ArrayD::from_shape_vec(IxDyn(&concrete_shape), int32_data)
+            //             .map(|arr| ArrayDResult::Int32(arr))
+            //             .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for int32 tensor".into()))
+            //     }
+            //     DataType::Boolean=>{
+            //     let bool_data: Vec<bool> = data
+            //                             .iter()
+            //                             .map(|&b| b != 0)
+            //                             .collect();
+            //         ArrayD::from_shape_vec(IxDyn(&concrete_shape), bool_data)
+            //             .map(|arr| ArrayDResult::Boolean(arr))
+            //             .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for boolean tensor".into()))
+                    
+            //     }
+                
+            //     _ => Err(OrtError::TypeMismatch("Unsupported tensor type, expected Float, Int64, or Int32".to_string())),
+            // };
+            // println!("--->>>>=========={:?}",result.unwrap());
+            f
                 .debug_struct("Tensor")
+                // .field("data", data)
+                // .field("anything", &result.unwrap())
                 .field("shape", shape)
                 .field("dtype", dtype)
-                .finish(),
+                .finish()},
             OrtValue::Sequence(seq) => f.debug_tuple("Sequence").field(seq).finish(),
             OrtValue::Map(map) => f.debug_tuple("Map").field(map).finish(),
             OrtValue::Opaque(o) => f.debug_tuple("Opaque").field(o).finish(),
@@ -1589,7 +1764,7 @@ impl OrtEngine {
         // Use optimized versions for better performance
         self.node_registry.insert("Conv".into(), Self::op_conv_optimized);
         self.node_registry.insert("ConvTranspose".into(), Self::op_conv_transpose_optimized);
-        self.node_registry.insert("LSTM".into(), Self::op_lstm_optimized);
+        self.node_registry.insert("LSTM".into(), Self::op_lstm);
         // self.node_registry.insert("Resize".into(), Self::op_resize_optimized);
         self.node_registry.insert("STFT".into(), Self::op_stft_optimized);
         
@@ -1767,9 +1942,9 @@ impl OrtEngine {
             
             // Collect inputs for the node, allowing for optional inputs
             let node_inputs_p = node.input.clone();
-            // println!("Processing node {}: {:?}==========================={:?}", node_index, node,node_inputs_p);
+            println!("Processing node {}: {:?}==========================={:?}", node_index, node,node_inputs_p);
             let jio=node;
-            println!("{:?}------------====",jio.output);
+            // println!("{:?}------------====",jio.output);
             let node_inputs = node_inputs_p
                 .iter().enumerate().map(|(index, name)| {
                     if name.is_empty() {
@@ -1846,8 +2021,17 @@ impl OrtEngine {
             let tensor_count_after = tensor_map.len();
             let new_tensor_count = tensor_count_after - tensor_count_before;
             
-            println!("Node '{}' (op: {}) took: {:?}, produced {} new tensors, total: {} tensors, running for: {:?}", 
-                node.name, node.op_type, elapsed, new_tensor_count, tensor_count_after, started_at.elapsed());
+            println!("Node '{}' (op: {}) took: {:?}, produced {} new tensors, total: {} tensors, running for: {:?}",  node.name, node.op_type, elapsed, new_tensor_count, tensor_count_after, started_at.elapsed());
+            
+            
+            // Print node output information in Python format
+            for output_name in &node.output {
+                if let Some(tensor_value) = tensor_map.get(output_name) {
+                    print_tensor_info(output_name, tensor_value);
+                }
+            }
+            
+            
             
             // Update execution state
             // execution_state.processed_nodes.insert(node.name.clone());
@@ -1855,14 +2039,14 @@ impl OrtEngine {
             // execution_state.tensor_map_keys = tensor_map.keys().cloned().collect();
             
             // Save only new tensors incrementally with output tracking
-            if let Err(e) = execution_state.save_new_tensors(&new_tensors, node_index, &node.name, &node.output) {
-                eprintln!("ERROR: Failed to save new tensors: {}", e);
-            }
+            // if let Err(e) = execution_state.save_new_tensors(&new_tensors, node_index, &node.name, &node.output) {
+            //     eprintln!("ERROR: Failed to save new tensors: {}", e);
+            // }
             
             // Save execution state (lightweight)
-            if let Err(e) = execution_state.save_to_file(state_file_path) {
-                eprintln!("Warning: Failed to save execution state: {}", e);
-            }
+            // if let Err(e) = execution_state.save_to_file(state_file_path) {
+            //     eprintln!("Warning: Failed to save execution state: {}", e);
+            // }
             
             // Append execution time data immediately to file
             let execution_line = format!("{},{},{:?}\n", node.name, node.op_type, elapsed);
@@ -2093,12 +2277,26 @@ fn parse_int32_data(proto: &TensorProto, count: usize) -> OrtResult<Vec<u8>> {
         Ok(bytes)
     }
 }
+#[test]
+fn justprint(){
+    print_model_info("./kokoro-v1.0.onnx").expect("Failed to print model info");
+}
 pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
     let mut file = File::open(path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
     let model = ModelProto::decode(&*buffer)?;
-
+    let graph = model.graph.as_ref().ok_or(OrtError::InvalidModel)?;
+    println!("\nFirst appearance of each unique op_type:");
+    let mut seen_op_types = HashSet::new();
+    for (i, node) in graph.node.iter().enumerate() {
+        if seen_op_types.insert(node.op_type.clone()) {
+            println!("  first occurrence of '{}' is at {}", node.op_type,i);
+            println!("{:?}",node)
+        }
+    }
+    return Ok(());
+    
     println!("Opcode Versions:");
     for opset in &model.opset_import {
         println!(
@@ -2108,7 +2306,7 @@ pub fn print_model_info<P: AsRef<Path>>(path: P) -> OrtResult<()> {
         );
     }
 
-    let graph = model.graph.as_ref().ok_or(OrtError::InvalidModel)?;
+    
     let mut core_ops = HashSet::new();
     let mut vendor_ops = HashSet::new();
     println!("\nModel Initializers:");
@@ -2267,7 +2465,12 @@ let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
     }
 
     // Convert blended_style to raw bytes for OrtValue::Tensor
-    let flat_data: Vec<f32> = blended_style.into_iter().flatten().collect();
+    let flat_data: Vec<f32> = vec![
+        -0.16746138, 0.106833816, -0.17197946, -0.17930198, -0.4060307, 0.11337316, -0.05904325, -0.13578473, -0.343865, -0.0030500141, -0.058186237, -0.18617716, 0.3655906, 0.1500281, 0.0323276, -0.2660883, -0.021834578, -0.18887411, 0.15604171, -0.17936222, -0.21674247, -0.08793214, -0.014403321, -0.038582608, 0.005953279, 0.30037892, -0.25818214, 0.14401352, 0.00625191, 0.18139648, 0.1905407, -0.30535796, -0.016582137, -0.06380315, 0.19268999, 0.031495668, -0.10360171, -0.07843726, 0.035174046, 0.047639426, 0.09471621, -0.059944917, 0.07799803, 0.42816967, -0.27074027, -0.059864923, 0.094025224, -0.07608084, -0.009240143, 0.2764985, -0.044961445, -0.22325265, 0.28969276, 0.021382106, 0.09409301, 0.3064245, 0.085562065, -0.018245282, -0.12442948, 0.12522374, 0.20399052, -0.07992236, -0.17870936, -0.03290955, 0.20011769, 0.23295887, -0.0011655795, 0.2106421, 0.029463217, 0.049337372, 0.07007421, 0.06657779, 0.12671578, -0.3048649, -0.17952333, -0.20896465, 0.010621702, 0.16129294, 0.24825078, -0.06730439, 0.14417285, 0.14019054, -0.16492297, 0.07709213, 0.18941414, 0.07108727, -0.16543987, -0.1864754, -0.25925547, -0.011538826, 0.12039098, 0.024524461, 0.09829027, -0.020422952, -0.19386753, -0.13779366, 0.06404631, -0.091026954, 0.1432159, -0.1445843, -0.099253185, -0.27379233, 0.07603142, -0.06384298, 0.20024501, 0.14540523, 0.010894625, 0.18515547, 0.23194641, -0.07801862, -0.03515421, 0.005198706, 0.11977995, 0.028442672, -0.26251578, 0.087687396, -0.09812868, -0.021395776, 0.17591082, 0.00079514645, -0.037736632, 0.16991898, 0.020198015, 0.29645926, 0.21168791, -0.37216398, 0.13653347, -0.06943156, -0.014739413, 0.16784102, 0.48688984, 0.10855578, -0.25430948, -0.13242087, 0.36683533, 0.0017357357, -0.3956462, -0.27680144, 0.29430857, -0.09608546, 0.10188929, -0.1437357, 0.26491192, -0.07434953, 0.2738349, 0.074040905, -0.15176898, -0.13395815, 0.3927017, -0.14603326, 0.26794004, 0.06925736, -0.111301675, 0.45458955, -0.21831812, -0.15351343, -0.14352655, 0.2463764, 0.59878033, -0.28609738, 0.21620028, 0.16584155, 0.26237804, 0.639141, 0.48741198, 0.28353006, 0.20943506, -0.005696906, 0.0027122672, -0.2647833, 0.20146331, 0.7051931, -0.33182484, 0.12572102, -0.18048556, -0.886673, -0.18763334, 0.11108457, 0.04415555, -0.4453653, 0.7829914, 0.23367575, 0.07653396, -0.058281526, 0.63499576, -0.12139675, 0.10016927, -0.24464339, -0.169406, -0.37613553, -0.0048745424, -0.05477307, 0.21715853, 0.44753513, 0.08324612, -0.34354436, 0.20547722, 0.14335431, 0.15277404, 0.137537, 0.014170506, -0.48911935, -0.35340762, 0.09423898, 0.56586313, 0.21005873, 0.3004918, 0.20001253, -0.21485168, 0.2627742, -0.077053934, -0.22529292, -0.18517601, -0.077634186, 0.13139398, -0.22406033, 0.2564357, -0.32308036, -0.49612147, 0.6047083, 0.04769512, 0.13776457, -0.45326835, -0.01648686, -0.36213535, -0.12455494, 0.23899081, -0.019421533, -0.11391652, -0.010070331, 0.17823072, 0.12505603, -0.19111425, 0.36101788, 0.35537708, -0.31394705, 0.05328191, -0.30892166, -0.11983204, 0.2664771, -0.0821251, 0.28563684, 0.13965864, 0.5084046, -0.09097928, 0.4581191, -0.094962835, 0.6173904, -0.07400553, -0.17739949, -0.12363535, 0.5033887, 0.23096946, -0.11120826, -0.12198155, -0.10832049
+    ];
+    // let flat_data: Vec<f32> = blended_style.into_iter().flatten().collect();
+    // println!("{:?}",flat_data);
+    // return Ok(());
     let data_bytes: Vec<u8> = flat_data
         .into_iter()
         .flat_map(|x| x.to_le_bytes().to_vec())

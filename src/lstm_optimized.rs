@@ -101,12 +101,12 @@ impl OrtEngine {
             };
 
             // Initialize states
-            let mut h = match initial_h_array {
+            let mut h = match initial_h_array.clone() {
                 Some(arr) => arr,
                 None => ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[num_directions, batch_size, hidden_size])),
             };
 
-            let mut c = match initial_c_array {
+            let mut c = match initial_c_array.clone() {
                 Some(arr) => arr,
                 None => ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&[num_directions, batch_size, hidden_size])),
             };
@@ -119,6 +119,18 @@ impl OrtEngine {
                 }
             );
 
+            println!("LSTM Input Values:");
+            // Self::printort(x.clone());
+            // Self::printort(w.clone());
+            // Self::printort(r.clone());
+            println!("{:?}",x_array.clone());
+            println!("{:?}",w_array.clone());
+            println!("{:?}",r_array.clone());
+            println!("{:?}",b_array.clone());
+            println!("{:?}",_sequence_lens);
+            println!("{:?}",initial_h_array.clone());
+            println!("{:?}",initial_c_array.clone());
+            // println!("{:?}",p);
             // Optimized LSTM computation with parallelization
             Self::lstm_compute_parallel(
                 &x_array, &w_array, &r_array, &b_array,
@@ -126,7 +138,11 @@ impl OrtEngine {
                 seq_length, batch_size, input_size, hidden_size,
                 num_directions, layout
             )?;
-
+            println!("LSTM Output Values:");
+            println!("{:?}",y);
+            println!("{:?}",h);
+            println!("{:?}",c);
+            panic!("error-=====================================");
             Ok(OrtValue::Sequence(vec![
                 ndarray_to_ort(ArrayDResult::Float(y), dtype),
                 ndarray_to_ort(ArrayDResult::Float(h), dtype),
@@ -578,6 +594,7 @@ impl OrtEngine {
             .map(|a| a.i as usize)
             .unwrap_or(0);
 
+            
         let dtype = match x {
             OrtValue::Tensor { dtype, .. } => *dtype,
             _ => return Err(OrtError::TypeMismatch("Input X must be a tensor".into())),
@@ -670,6 +687,18 @@ impl OrtEngine {
             }
         );
 
+        println!("LSTM Input Values 1d:");
+        println!("{:?}",x_array.clone());
+        println!("{:?}",w_array.clone());
+        println!("{:?}",r_array.clone());
+        // Self::printort(x.clone());
+        // Self::printort(w.clone());
+        // Self::printort(r.clone());
+        println!("{:?}",b);
+        // println!("{:?}",sequence_lens);
+        println!("{:?}",initial_h);
+        println!("{:?}",initial_c);
+            // println!("{:?}",p);
         // Optimized 1D LSTM computation with parallelization
         Self::lstm_1d_compute_parallel(
             &x_array, &w_array, &r_array, &b_array,
@@ -677,6 +706,11 @@ impl OrtEngine {
             seq_length, batch_size, input_size, hidden_size,
             num_directions, layout
         )?;
+        println!("LSTM Output Values:");
+        println!("{:?}",(y));
+        println!("{:?}",(h));
+        println!("{:?}",(c));
+        panic!("error-=====================================");
 
         Ok(OrtValue::Sequence(vec![
             ndarray_to_ort(ArrayDResult::Float(y), dtype),

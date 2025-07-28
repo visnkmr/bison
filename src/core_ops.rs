@@ -2831,95 +2831,95 @@ _ => return Err(OrtError::InvalidTensorData(format!("Unsupported auto_pad value:
     }
 
     pub fn op_transpose(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
-    // Get the input tensor
-    let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Transpose requires data tensor".to_string()))?;
+        // Get the input tensor
+        let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Transpose requires data tensor".to_string()))?;
 
-    // Extract the data type and shape of the input tensor
-    let (input_dtype, input_shape) = match data {
-        OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
-        _ => return Err(OrtError::TypeMismatch("Input must be a tensor".to_string())),
-    };
+        // Extract the data type and shape of the input tensor
+        let (input_dtype, input_shape) = match data {
+            OrtValue::Tensor { dtype, shape, .. } => (*dtype, shape.clone()),
+            _ => return Err(OrtError::TypeMismatch("Input must be a tensor".to_string())),
+        };
 
-    // Get the rank of the input tensor
-    let rank = input_shape.len();
+        // Get the rank of the input tensor
+        let rank = input_shape.len();
 
-    // Get the perm attribute (if provided)
-    let perm = node.attributes.iter()
+        // Handle empty tensor (scalar)
+        if rank == 0 {
+            return Ok(data.clone());
+        }
+
+        // Get the perm attribute (if provided)
+        let perm = node.attributes.iter()
         .find(|a| a.name == "perm")
         .map(|a| a.ints.clone())
         .unwrap_or_else(|| {
             // Default is to reverse the dimensions
             (0..rank as i64).rev().collect()
         });
+        println!("perm------->>>>>>====={:?}",perm);
 
-    // Validate perm attribute
-    if perm.len() != rank {
-        return Err(OrtError::InvalidTensorData(
-            format!("perm attribute length ({}) must match input rank ({})", perm.len(), rank).into()
-        ));
-    }
-
-    // Check for duplicate entries in perm
-    let mut sorted_perm = perm.clone();
-    sorted_perm.sort();
-    for i in 1..sorted_perm.len() {
-        if sorted_perm[i] == sorted_perm[i-1] {
+        // Validate perm attribute
+        if perm.len() != rank {
             return Err(OrtError::InvalidTensorData(
-                format!("Duplicate value {} in perm attribute", sorted_perm[i]).into()
+                format!("perm attribute length ({}) must match input rank ({})", perm.len(), rank).into()
             ));
         }
-    }
 
-    // Normalize negative indices and validate
-    let normalized_perm: Vec<usize> = perm.iter()
-        .map(|&axis| {
+        // Normalize negative indices and validate
+        let mut normalized_perm: Vec<usize> = Vec::with_capacity(rank);
+        for &axis in &perm {
             let normalized = if axis < 0 { rank as i64 + axis } else { axis };
             if normalized < 0 || normalized >= rank as i64 {
                 return Err(OrtError::InvalidTensorData(
                     format!("Axis {} is out of bounds for array of rank {}", axis, rank).into()
                 ));
             }
-            Ok(normalized as usize)
-        })
-        .collect::<OrtResult<_>>()?;
+            normalized_perm.push(normalized as usize);
+        }
+        println!("normalized_perm------->>>>>>====={:?}",normalized_perm);
 
-    // Create the output shape
-    let output_shape: Vec<Dimensions> = normalized_perm.iter()
-        .map(|&idx| input_shape[idx].clone())
-        .collect();
+        // Check for duplicate entries in normalized perm
+        let mut sorted_perm = normalized_perm.clone();
+        sorted_perm.sort();
+        for i in 1..sorted_perm.len() {
+            if sorted_perm[i] == sorted_perm[i-1] {
+                return Err(OrtError::InvalidTensorData(
+                    format!("Duplicate value {} in perm attribute", sorted_perm[i]).into()
+                ));
+            }
+        }
+        println!("sorted_perm------->>>>>>====={:?}",sorted_perm);
+        // Convert input to ndarray
+        let input_array = ort_to_ndarray(data)?;
 
-    // Convert input to ndarray
-    let input_array = ort_to_ndarray(data)?;
-
-    // Perform the transpose based on data type
-    match input_array {
-        ArrayDResult::Float(arr) => {
-            // Create the permutation array for ndarray
-            let perm_array: Vec<usize> = normalized_perm;
-            
-            // Perform the transpose
-            let transposed = arr.permuted_axes(perm_array);
-            
-            Ok(ndarray_to_ort(ArrayDResult::Float(transposed.into_owned()), input_dtype))
-        },
-        ArrayDResult::Int32(arr) => {
-            let perm_array: Vec<usize> = normalized_perm;
-            let transposed = arr.permuted_axes(perm_array);
-            Ok(ndarray_to_ort(ArrayDResult::Int32(transposed.into_owned()), input_dtype))
-        },
-        ArrayDResult::Int64(arr) => {
-            let perm_array: Vec<usize> = normalized_perm;
-            let transposed = arr.permuted_axes(perm_array);
-            Ok(ndarray_to_ort(ArrayDResult::Int64(transposed.into_owned()), input_dtype))
-        },
-        ArrayDResult::Boolean(arr) => {
-            let perm_array: Vec<usize> = normalized_perm;
-            let transposed = arr.permuted_axes(perm_array);
-            Ok(ndarray_to_ort(ArrayDResult::Boolean(transposed.into_owned()), input_dtype))
-        },
-        // Add other data types as needed
-    }
-        
+        // Perform the transpose based on data type
+        match input_array {
+            ArrayDResult::Float(arr) => {
+                // Perform the transpose
+                let transposed = arr.permuted_axes(normalized_perm);
+                // Convert to owned and ensure contiguous memory layout
+                let contiguous = transposed.to_owned();
+                Ok(ndarray_to_ort(ArrayDResult::Float(contiguous), input_dtype))
+            },
+            ArrayDResult::Int32(arr) => {
+                let transposed = arr.permuted_axes(normalized_perm);
+                // Convert to owned and ensure contiguous memory layout
+                let contiguous = transposed.to_owned();
+                Ok(ndarray_to_ort(ArrayDResult::Int32(contiguous), input_dtype))
+            },
+            ArrayDResult::Int64(arr) => {
+                let transposed = arr.permuted_axes(normalized_perm);
+                // Convert to owned and ensure contiguous memory layout
+                let contiguous = transposed.to_owned();
+                Ok(ndarray_to_ort(ArrayDResult::Int64(contiguous), input_dtype))
+            },
+            ArrayDResult::Boolean(arr) => {
+                let transposed = arr.permuted_axes(normalized_perm);
+                // Convert to owned and ensure contiguous memory layout
+                let contiguous = transposed.to_owned();
+                Ok(ndarray_to_ort(ArrayDResult::Boolean(contiguous), input_dtype))
+            },
+        }
     }
 
     pub fn op_shape(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
@@ -5048,7 +5048,7 @@ let trans_b = node.attributes.iter()
     .map(|a| a.i != 0)
     .unwrap_or(false);
 
-    println!("transa--{}===transb--{}",trans_a,trans_b);
+    // println!("transa--{}===transb--{}",trans_a,trans_b);
 
 // Convert inputs to ndarrays
 let a_array = ort_to_ndarray(a)?;
@@ -5575,7 +5575,102 @@ match (a_array, b_array, c_array) {
         
     }
     
-    
+    pub fn printort(x:OrtValue){
+        println!("Using new method");
+        match x {
+            OrtValue::Tensor { shape, dtype, data, .. } => {
+                // Check if shape contains symbolic dimensions
+                if shape.iter().any(|d| matches!(d, Dimensions::Symbolic(_))) {
+                    // return Err(OrtError::InvalidTensorData("Cannot convert symbolic shape to ndarray".into()));
+                }
+                let concrete_shape: Vec<usize> = shape.iter().map(|d| match d {
+                    Dimensions::Fixed(n) => *n,
+                    Dimensions::Symbolic(_) => unreachable!(), // Handled above
+                }).collect();
+                // println!("Input-->F=={:?}========shape====={:?}",shape,dtype);
+                
+                let result = match dtype {
+                    DataType::Float => {
+                        let float_data: Vec<f32> = data
+                            .chunks(4)
+                            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                            .collect();
+                        ArrayD::from_shape_vec(IxDyn(&concrete_shape), float_data)
+                            .map(|arr| ArrayDResult::Float(arr))
+                            .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for float tensor".into()))
+                    }
+                    DataType::Int64 => {
+                        let int64_data: Vec<i64> = data
+                            .chunks(8)
+                            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                            .collect();
+                        ArrayD::from_shape_vec(IxDyn(&concrete_shape), int64_data)
+                            .map(|arr| ArrayDResult::Int64(arr))
+                            .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for int64 tensor".into()))
+                    }
+                    DataType::Int32 => {
+                        let int32_data: Vec<i32> = data
+                            .chunks(4)
+                            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                            .collect();
+                        ArrayD::from_shape_vec(IxDyn(&concrete_shape), int32_data)
+                            .map(|arr| ArrayDResult::Int32(arr))
+                            .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for int32 tensor".into()))
+                    }
+                    DataType::Boolean=>{
+                    let bool_data: Vec<bool> = data
+                                            .iter()
+                                            .map(|&b| b != 0)
+                                            .collect();
+                        ArrayD::from_shape_vec(IxDyn(&concrete_shape), bool_data)
+                            .map(|arr| ArrayDResult::Boolean(arr))
+                            .map_err(|_| OrtError::InvalidTensorData("Shape mismatch for boolean tensor".into()))
+                        
+                    }
+                    
+                    _ => Err(OrtError::TypeMismatch("Unsupported tensor type, expected Float, Int64, or Int32".to_string())),
+                };
+                match &result {
+                    Ok(ArrayDResult::Float(arr)) => {
+                        println!("Float array with shape {:?}:", arr.shape());
+                        println!("[");
+                        for (i) in arr.iter() {
+                            print!(" {}, ",i);
+                        }
+                        println!("]");
+                    },
+                    Ok(ArrayDResult::Int32(arr)) => {
+                        println!("Int32 array with shape {:?}:", arr.shape());
+                        for (i, val) in arr.iter().enumerate() {
+                            println!("  [{}] = {}", i, val);
+                        }
+                    },
+                    Ok(ArrayDResult::Int64(arr)) => {
+                        println!("Int64 array with shape {:?}:", arr.shape());
+                        for (i, val) in arr.iter().enumerate() {
+                            println!("  [{}] = {}", i, val);
+                        }
+                    },
+                    Ok(ArrayDResult::Boolean(arr)) => {
+                        println!("Boolean array with shape {:?}:", arr.shape());
+                        for (i, val) in arr.iter().enumerate() {
+                            println!("  [{}] = {}", i, val);
+                        }
+                    },
+                    Err(e) => {
+                        println!("Error converting tensor: {:?}", e);
+                    }
+                }
+                // println!("{:?}", arr.as_slice().unwrap_or(&[]));
+                
+                // println!("Input-->====={:?}",result);
+                // println!("Input-->datatype====={:?}========shape====={:?}",shape,dtype);
+                // result
+            }
+            _ => {},
+        }
+
+    }
     pub fn op_lstm(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
         println!("Using old method");
             // Get the input tensors
@@ -5590,6 +5685,62 @@ match (a_array, b_array, c_array) {
             let initial_c = inputs.get(6); // Initial cell state
             let p = inputs.get(7); // Peephole weights
 
+            // Print all input values to console
+            // println!("LSTM Input Values:");
+
+            // // Self::printort(x.clone());
+            // // Self::printort(w.clone());
+            // // Self::printort(r.clone()); 
+            
+            // println!("{:?}",x.clone());
+            // println!("{:?}",w.clone());
+            // println!("{:?}",r.clone());
+            // println!("{:?}",b);
+            // println!("{:?}",sequence_lens);
+            // println!("{:?}",initial_h);
+            // println!("{:?}",initial_c);
+            // println!("{:?}",p);
+            // println!("  x shape: {:?}", x_array.shape());
+            // println!("  w shape: {:?}", w_array.shape());
+            // println!("  r shape: {:?}", r_array.shape());
+            // if let Some(ref b) = b_array {
+            //     println!("  b shape: {:?}", b.shape());
+            // } else {
+            //     println!("  b: None");
+            // }
+            // if let Some(ref seq_lens) = sequence_lens_array {
+            //     println!("  sequence_lens shape: {:?}", seq_lens.shape());
+            // } else {
+            //     println!("  sequence_lens: None");
+            // }
+            // if let Some(ref h) = initial_h_array {
+            //     println!("  initial_h shape: {:?}", h.shape());
+            // } else {
+            //     println!("  initial_h: None");
+            // }
+            // if let Some(ref c) = initial_c_array {
+            //     println!("  initial_c shape: {:?}", c.shape());
+            // } else {
+            //     println!("  initial_c: None");
+            // }
+            // if let Some(ref p) = p_array {
+            //     println!("  p shape: {:?}", p.shape());
+            // } else {
+            //     println!("  p: None");
+            // }
+            // println!("  hidden_size: {}", hidden_size);
+            // println!("  direction: {}", direction);
+            // println!("  num_directions: {}", num_directions);
+            // println!("  clip: {:?}", clip);
+            // println!("  input_forget: {}", input_forget);
+            // println!("  layout: {}", layout);
+            // println!("  activations: {:?}", activations);
+            // println!("  activation_alpha: {:?}", activation_alpha);
+            // println!("  activation_beta: {:?}", activation_beta);
+            // println!("  seq_length: {}", seq_length);
+            // println!("  batch_size: {}", batch_size);
+            // println!("  input_size: {}", input_size);
+            
             // Get attributes
             let hidden_size = node.attributes.iter()
                 .find(|a| a.name == "hidden_size")
@@ -5962,7 +6113,11 @@ match (a_array, b_array, c_array) {
                     }
                 }
             }
-
+            // println!("LSTM Output Values:");
+            // println!("{:?}",y);
+            // println!("{:?}",h);
+            // println!("{:?}",c);
+            // panic!("error-=====================================");
             // Return Y as the primary output
             // At the end of the function, replace the current return statement
 // Return Y, Y_h, and Y_c as a vector of OrtValues
@@ -8316,9 +8471,23 @@ vec![
             effective_steps[axis] = step as isize;
         }
     
+        // Check if slice operation is required
+        let mut is_slice_required = false;
+        for i in 0..rank {
+            if effective_steps[i] != 1 || effective_starts[i] != 0 || effective_ends[i] != input_shape_vec[i] {
+                is_slice_required = true;
+                break;
+            }
+        }
+    
+        // If slice is not required, return the original tensor
+        if !is_slice_required {
+            return Ok(data.clone());
+        }
+    
         // Calculate output shape
         let mut output_shape = Vec::with_capacity(rank);
-        for axis in 0..rank {
+                    for axis in 0..rank {
             let start = effective_starts[axis] as i64;
             let end = effective_ends[axis] as i64;
             let step = effective_steps[axis] as i64;
@@ -8380,16 +8549,15 @@ vec![
                     for axis in 0..rank {
                         let axis_idx = effective_starts[axis] as i64 + idx[axis] as i64 * effective_steps[axis] as i64;
                         indices[axis] = axis_idx as usize;
-                    }
+        }
                     output[idx.slice()] = arr[indices.as_slice()];
-                }
+    }
                 let result = output;
                 Ok(ndarray_to_ort(ArrayDResult::Boolean(result), input_dtype))
             },
             _ => Err(OrtError::TypeMismatch(format!("Unsupported data type for Slice operation: {:?}", input_dtype))),
         }
     }
-
     pub fn op_where(_node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
 // Get the input tensors
 let condition = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Where requires condition tensor".to_string()))?;
@@ -8551,7 +8719,7 @@ match (x_array, y_array) {
     // Softmax
     pub fn op_softmax(node: &NodeProto, inputs: &[OrtValue]) -> OrtResult<OrtValue> {
 // Get the input tensor
-let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("LogSoftmax requires input tensor".to_string()))?;
+let data = inputs.get(0).ok_or_else(|| OrtError::TypeMismatch("Softmax requires input tensor".to_string()))?;
 
 // Extract the data type and shape of the input tensor
 let (input_dtype, input_shape) = match data {
@@ -8561,7 +8729,7 @@ let (input_dtype, input_shape) = match data {
 
 // Check that the data type is float
 if input_dtype != DataType::Float {
-    return Err(OrtError::TypeMismatch(format!("LogSoftmax requires float tensor, got {:?}", input_dtype)));
+    return Err(OrtError::TypeMismatch(format!("Softmax requires float tensor, got {:?}", input_dtype)));
 }
 
 // Get the axis attribute (default is -1)
@@ -8589,7 +8757,7 @@ if normalized_axis < 0 || normalized_axis >= rank {
     ));
 }
 
-// Compute LogSoftmax
+// Compute Softmax
 let output = match input_array {
     ref arr => {
         // Create a new array to store the result
@@ -8622,17 +8790,18 @@ let output = match input_array {
                 // Find the maximum value in the slice (for numerical stability)
                 let max_val = slice.fold(std::f32::NEG_INFINITY, |a, &b| a.max(b));
                 
-                // Compute exp(x - max) for each element
+                // Compute exp(x - max) for each element and sum them
                 let mut exp_sum = 0.0;
+                let mut exp_values = vec![0.0; axis_dim];
                 for j in 0..axis_dim {
                     let exp_val = (slice[j] - max_val).exp();
+                    exp_values[j] = exp_val;
                     exp_sum += exp_val;
                 }
                 
-                // Compute log(softmax) = (x - max) - log(sum(exp(x - max)))
-                let log_sum_exp = exp_sum.ln();
+                // Compute softmax = exp(x - max) / sum(exp(x - max))
                 for j in 0..axis_dim {
-                    result_reshaped[[o, j, i]] = slice[j] - max_val - log_sum_exp;
+                    result_reshaped[[o, j, i]] = exp_values[j] / exp_sum;
                 }
             }
         }
@@ -8642,7 +8811,11 @@ let output = match input_array {
             .map_err(|e| OrtError::InvalidTensorData(format!("Failed to reshape back to original shape: {:?}", e).into()))?
     }
 };
-
+// print_tensor_info("output_name", &ndarray_to_ort(ArrayDResult::Float(output.clone()), input_dtype));
+// println!("{:?}",output);
+// let sendout=ndarray_to_ort(ArrayDResult::Float(output), input_dtype);
+// println!("{:?}",ort_to_ndarray(&sendout));
+// panic!("error=====================================");
 Ok(ndarray_to_ort(ArrayDResult::Float(output), input_dtype))
         
     }

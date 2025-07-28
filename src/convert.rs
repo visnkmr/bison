@@ -596,25 +596,49 @@ impl Div for ArrayDResult {
 pub fn ndarray_to_ort(array: ArrayDResult, dtype: DataType) -> OrtValue {
     let (shape,data)=match(array){
         ArrayDResult::Float(array_base) => {
-                        (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect() ,array_base.into_raw_vec()
+                        // Ensure the array is in standard (C-contiguous) layout
+                        let contiguous_array = if array_base.is_standard_layout() {
+                            array_base
+                        } else {
+                            array_base.as_standard_layout().into_owned()
+                        };
+                        (contiguous_array.shape().iter().map(|&n| Dimensions::Fixed(n)).collect() ,contiguous_array.into_raw_vec()
                         .into_iter()
                         .flat_map(|x| x.to_le_bytes())
                         .collect())
             },
         ArrayDResult::Int64(array_base) => {
-                (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),array_base.into_raw_vec()
+                // Ensure the array is in standard (C-contiguous) layout
+                let contiguous_array = if array_base.is_standard_layout() {
+                    array_base
+                } else {
+                    array_base.as_standard_layout().into_owned()
+                };
+                (contiguous_array.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),contiguous_array.into_raw_vec()
                 .into_iter()
                 .flat_map(|x| x.to_le_bytes())
                 .collect())
             },
         ArrayDResult::Int32(array_base) => {
-               ( array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),array_base.into_raw_vec()
+               // Ensure the array is in standard (C-contiguous) layout
+               let contiguous_array = if array_base.is_standard_layout() {
+                   array_base
+               } else {
+                   array_base.as_standard_layout().into_owned()
+               };
+               ( contiguous_array.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(),contiguous_array.into_raw_vec()
                .into_iter()
                .flat_map(|x| x.to_le_bytes())
                .collect())
             },
         ArrayDResult::Boolean(array_base) => {
-            (array_base.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(), array_base.into_raw_vec()
+            // Ensure the array is in standard (C-contiguous) layout
+            let contiguous_array = if array_base.is_standard_layout() {
+                array_base
+            } else {
+                array_base.as_standard_layout().into_owned()
+            };
+            (contiguous_array.shape().iter().map(|&n| Dimensions::Fixed(n)).collect(), contiguous_array.into_raw_vec()
                             .into_iter()
                             .map(|x| if x { 1u8 } else { 0u8 })
                             .collect())
@@ -628,8 +652,8 @@ pub fn ndarray_to_ort(array: ArrayDResult, dtype: DataType) -> OrtValue {
         data: Arc::new(data),
     };
     // println!("Outut-->====={:?}",result);
-    println!("{:?}",shape_ret);
-    println!("{:?}",dtype);
+    // println!("{:?}",shape_ret);
+    // println!("{:?}",dtype);
     // println!("Outut-->datatype====={:?}========shape====={:?}",shape_ret,dtype);
     result
 }
@@ -715,10 +739,604 @@ pub fn ort_to_ndarray(ort: &OrtValue) -> OrtResult<ArrayDResult> {
         _ => Err(OrtError::TypeMismatch("Expected tensor".to_string())),
     }
 }
+// Mock helper functions for testing
+fn create_ort_tensor(
+    data: Vec<u8>,
+    shape: Vec<usize>,
+    dtype: DataType,
+) -> OrtValue {
+    OrtValue::Tensor {
+        shape: shape.into_iter().map(|d| Dimensions::Fixed(d)).collect(),
+        dtype,
+        data: Arc::new(data),
+    }
+}
+
+
+
+    // Helper function to create ArrayDResult from a Vec and shape
+    fn create_float_array(data: Vec<f32>, shape: &[usize]) -> ArrayDResult {
+        ArrayDResult::Float(
+            ArrayD::from_shape_vec(IxDyn(shape), data).expect("Failed to create float array"),
+        )
+    }
+
+    fn create_int64_array(data: Vec<i64>, shape: &[usize]) -> ArrayDResult {
+        ArrayDResult::Int64(
+            ArrayD:: from_shape_vec(IxDyn(shape), data).expect("Failed to create int64 array"),
+        )
+    }
+
+    fn create_int32_array(data: Vec<i32>, shape: &[usize]) -> ArrayDResult {
+        ArrayDResult::Int32(
+            ArrayD::from_shape_vec(IxDyn(shape), data).expect("Failed to create int32 array"),
+        )
+    }
+
+#[cfg(test)]
+mod tests_transpose{
+    use std::collections::HashMap;
+
+    use crate::{AttributeProto, OrtEngine, TensorProto};
+    use crate::*;
+    use crate::convert::*;
+    #[test]
+fn test_op_transpose_default_perm() {
+        // Test transpose with default permutation (reverse dimensions)
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let input = create_ort_tensor(
+            input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2, 3],
+            DataType::Float,
+        );
+        
+        // Create node without perm attribute (should default to reversing dimensions)
+        let node = NodeProto::default();
+        
+        let inputs = vec![input];
+        let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+        // println!("result------->>>>>>====={}",result);
+        
+        // Convert result back to ndarray to verify correctness
+        let result_array = ort_to_ndarray(&result).unwrap();
+        // println!("result_array------->>>>>>====={}",result_array);
+        
+        // Expected result: [[1, 4], [2, 5], [3, 6]]
+        match result_array {
+            ArrayDResult::Float(arr) => {
+                assert_eq!(arr.shape(), &[3, 2]);
+                assert_eq!(arr[[0, 0]], 1.0);
+                assert_eq!(arr[[0, 1]], 4.0);
+                assert_eq!(arr[[1, 0]], 2.0);
+                assert_eq!(arr[[1, 1]], 5.0);
+                assert_eq!(arr[[2, 0]], 3.0);
+                assert_eq!(arr[[2, 1]], 6.0);
+                println!("{:?}", arr);
+            },
+            _ => panic!("Expected Float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_transpose_custom_perm() {
+        // Test transpose with custom permutation
+        let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0];
+        let input = create_ort_tensor(
+            input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2, 2, 3], // Shape: [2, 2, 3]
+            DataType::Float,
+        );
+        
+        // Create node with perm attribute [2, 0, 1]
+        let mut node = NodeProto::default();
+        node.attributes.push(AttributeProto {
+            name: "perm".to_string(),
+            ints: vec![2, 0, 1],
+            ..Default::default()
+        });
+        
+        let inputs = vec![input];
+        let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+        
+        // Convert result back to ndarray to verify correctness
+        let result_array = ort_to_ndarray(&result).unwrap();
+        
+        match result_array {
+            ArrayDResult::Float(arr) => {
+                // Expected shape after transpose [2, 0, 1]: [3, 2, 2]
+                assert_eq!(arr.shape(), &[3, 2, 2]);
+                
+                // Verify some values to ensure correct transposition
+                assert_eq!(arr[[0, 0, 0]], 1.0);  // Original [0, 0, 0]
+                assert_eq!(arr[[1, 0, 0]], 2.0);  // Original [0, 0, 1]
+                assert_eq!(arr[[2, 0, 0]], 3.0);  // Original [0, 0, 2]
+                assert_eq!(arr[[0, 1, 0]], 4.0);  // Original [0, 1, 0]
+            },
+            _ => panic!("Expected Float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_transpose_int32() {
+        // Test transpose with int32 data
+        let input_data = vec![1i32, 2, 3, 4, 5, 6];
+        let input = create_ort_tensor(
+            input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2, 3],
+            DataType::Int32,
+        );
+        
+        let node = NodeProto::default();
+        let inputs = vec![input];
+        let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+        
+        let result_array = ort_to_ndarray(&result).unwrap();
+        
+        match result_array {
+            ArrayDResult::Int32(arr) => {
+                assert_eq!(arr.shape(), &[3, 2]);
+                assert_eq!(arr[[0, 0]], 1);
+                assert_eq!(arr[[0, 1]], 4);
+                assert_eq!(arr[[1, 0]], 2);
+                assert_eq!(arr[[1, 1]], 5);
+                assert_eq!(arr[[2, 0]], 3);
+                assert_eq!(arr[[2, 1]], 6);
+            },
+            _ => panic!("transpose failed")
+        }
+    let result_array = ort_to_ndarray(&result).unwrap();
+    println!("result_array------->>>>>>====={:?}",result_array);
+    
+    // Expected: transpose [2, 3] -> [3, 2]
+    // Input: [[1, 2, 3], [4, 5, 6]]
+    // Output: [[1, 4], [2, 5], [3, 6]]
+    let expected = ArrayD::from_shape_vec(IxDyn(&[3, 2]), vec![1.0f32, 4.0, 2.0, 5.0, 3.0, 6.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            println!("{}",arr);
+            assert_eq!(arr, expected)
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_transpose_custom_perm_1() {
+    // Test transpose with custom permutation
+    let input_data: Vec<f32> = (1..=24).map(|x| x as f32).collect();
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3, 4],
+        DataType::Float,
+    );
+    
+    // Create node with perm=(1, 0, 2)
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "perm".to_string(),
+        ints: vec![1, 0, 2],
+        ..Default::default()
+    }];
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected: transpose [2, 3, 4] -> [3, 2, 4] with perm=(1, 0, 2)
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[3, 2, 4]);
+            
+            // Check a few key values
+            assert_eq!(arr[[0, 0, 0]], 1.0);  // Original [0, 0, 0]
+            assert_eq!(arr[[0, 1, 0]], 13.0); // Original [1, 0, 0]
+            assert_eq!(arr[[1, 0, 0]], 5.0);  // Original [0, 1, 0]
+            assert_eq!(arr[[2, 1, 3]], 24.0); // Original [1, 2, 3]
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_transpose_1d_tensor() {
+    // Test transpose with 1D tensor (should remain unchanged)
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![5],
+        DataType::Float,
+    );
+    
+    let node = NodeProto::default();
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected: 1D tensor should remain unchanged
+    let expected = ArrayD::from_shape_vec(IxDyn(&[5]), vec![1.0f32, 2.0, 3.0, 4.0, 5.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+#[test]
+fn test_op_transpose_int64() {
+    // Test transpose with int64 data
+    let input_data = vec![10i64, 20, 30, 40, 50, 60];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![3, 2],
+        DataType::Int64,
+    );
+    
+    let node = NodeProto::default();
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected: transpose [3, 2] -> [2, 3]
+    // Input: [[10, 20], [30, 40], [50, 60]]
+    // Output: [[10, 30, 50], [20, 40, 60]]
+    let expected = ArrayD::from_shape_vec(IxDyn(&[2, 3]), vec![10i64, 30, 50, 20, 40, 60]).unwrap();
+    match result_array {
+        ArrayDResult::Int64(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected int64 array"),
+    }
+}
+
+#[test]
+fn test_op_transpose_boolean() {
+    // Test transpose with boolean data
+    let input_data = vec![true, false, true, false, false, true];
+    let input = create_ort_tensor(
+        input_data.iter().map(|&b| b as u8).collect(),
+        vec![2, 3],
+        DataType::Boolean,
+    );
+    
+    let node = NodeProto::default();
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected: transpose [2, 3] -> [3, 2]
+    // Input: [[true, false, true], [false, false, true]]
+    // Output: [[true, false], [false, false], [true, true]]
+    let expected = ArrayD::from_shape_vec(IxDyn(&[3, 2]), vec![true, false, false, false, true, true]).unwrap();
+    match result_array {
+        ArrayDResult::Boolean(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected boolean array"),
+    }
+}
+
+#[test]
+fn test_op_transpose_4d_tensor() {
+    // Test transpose with 4D tensor
+    let input_data: Vec<f32> = (1..=24).map(|x| x as f32).collect();
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3, 2, 2],
+        DataType::Float,
+    );
+    
+    // Create node with perm=(3, 1, 0, 2)
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "perm".to_string(),
+        ints: vec![3, 1, 0, 2],
+        ..Default::default()
+    }];
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected: transpose [2, 3, 2, 2] -> [2, 3, 2, 2] with perm=(3, 1, 0, 2)
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[2, 3, 2, 2]);
+            
+            // Check a few key values to verify the permutation
+            assert_eq!(arr[[0, 0, 0, 0]], 1.0);  // Original [0, 0, 0, 0]
+            assert_eq!(arr[[1, 0, 0, 0]], 2.0);  // Original [0, 0, 0, 1]
+            assert_eq!(arr[[0, 1, 0, 0]], 5.0);  // Original [0, 1, 0, 0]
+            assert_eq!(arr[[0, 0, 1, 0]], 13.0); // Original [1, 0, 0, 0]
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_transpose_identity_perm() {
+    // Test transpose with identity permutation
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 3],
+        DataType::Float,
+    );
+    
+    // Create node with perm=(0, 1) - identity permutation
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "perm".to_string(),
+        ints: vec![0, 1],
+        ..Default::default()
+    }];
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected: tensor should remain unchanged
+    let expected = ArrayD::from_shape_vec(IxDyn(&[2, 3]), vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_transpose_3d_complex_perm() {
+    // Test transpose with complex 3D permutation
+    let input_data: Vec<f32> = (1..=12).map(|x| x as f32).collect();
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 2, 3],
+        DataType::Float,
+    );
+    
+    // Create node with perm=(2, 0, 1)
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "perm".to_string(),
+        ints: vec![2, 0, 1],
+        ..Default::default()
+    }];
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected: transpose [2, 2, 3] -> [3, 2, 2] with perm=(2, 0, 1)
+    match result_array {
+        ArrayDResult::Float(arr) => {
+            assert_eq!(arr.shape(), &[3, 2, 2]);
+            
+            // Check key values
+            assert_eq!(arr[[0, 0, 0]], 1.0);  // Original [0, 0, 0]
+            assert_eq!(arr[[0, 0, 1]], 4.0);  // Original [0, 1, 0]
+            assert_eq!(arr[[0, 1, 0]], 7.0);  // Original [1, 0, 0]
+            assert_eq!(arr[[1, 0, 0]], 2.0);  // Original [0, 0, 1]
+            assert_eq!(arr[[2, 1, 1]], 12.0); // Original [1, 1, 2]
+        },
+        _ => panic!("Expected float array"),
+    }
+}
+
+#[test]
+fn test_op_transpose_invalid_perm_length() {
+    // Test transpose with invalid permutation length
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 2],
+        DataType::Float,
+    );
+    
+    // Create node with perm that has wrong length
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "perm".to_string(),
+        ints: vec![0, 1, 2], // Wrong length for 2D tensor
+        ..Default::default()
+    }];
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs);
+    
+    // Should fail due to invalid permutation length
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_op_transpose_invalid_perm_values() {
+    // Test transpose with invalid permutation values
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 2],
+        DataType::Float,
+    );
+    
+    // Create node with perm that has out-of-bounds values
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "perm".to_string(),
+        ints: vec![0, 3], // 3 is out of bounds for 2D tensor
+        ..Default::default()
+    }];
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs);
+    
+    // Should fail due to invalid permutation values
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_op_transpose_duplicate_perm_values() {
+    // Test transpose with duplicate permutation values
+    let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![2, 2],
+        DataType::Float,
+    );
+    
+    // Create node with perm that has duplicate values
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "perm".to_string(),
+        ints: vec![0, 0], // Duplicate values
+        ..Default::default()
+    }];
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs);
+    
+    // Should fail due to duplicate permutation values
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_op_transpose_empty_input() {
+    // Test transpose with empty input
+    let inputs: Vec<OrtValue> = vec![];
+    let node = NodeProto::default();
+    let result = OrtEngine::op_transpose(&node, &inputs);
+    
+    // Should fail due to missing input
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_op_transpose_non_tensor_input() {
+    // Test transpose with non-tensor input
+    let input = OrtValue::Sequence(vec![]);
+    let node = NodeProto::default();
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs);
+    
+    // Should fail due to non-tensor input
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_op_transpose_scalar() {
+    // Test transpose with scalar (0D tensor)
+    let input_data = vec![42.0f32];
+    let input = create_ort_tensor(
+        input_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![],
+        DataType::Float,
+    );
+    
+    let node = NodeProto::default();
+    
+    let inputs = vec![input];
+    let result = OrtEngine::op_transpose(&node, &inputs).unwrap();
+    let result_array = ort_to_ndarray(&result).unwrap();
+    
+    // Expected: scalar should remain unchanged
+    let expected = ArrayD::from_shape_vec(IxDyn(&[]), vec![42.0f32]).unwrap();
+    match result_array {
+        ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+        _ => panic!("Expected float array"),
+    }
+}
+}
 
 
 
 #[cfg(test)]
+mod test_op_add {
+    use crate::{AttributeProto, OrtEngine, TensorProto};
+    use crate::*;
+    use crate::convert::*;
+
+    #[test]
+    fn test_op_add_float_tensors() {
+        // Test adding two float tensors
+        let input1_data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let input1 = create_ort_tensor(
+            input1_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2, 2],
+            DataType::Float,
+        );
+
+        let input2_data = vec![5.0f32, 6.0, 7.0, 8.0];
+        let input2 = create_ort_tensor(
+            input2_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2, 2],
+            DataType::Float,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input1, input2];
+        let result = OrtEngine::op_add(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected = ArrayD::from_shape_vec(IxDyn(&[2, 2]), vec![6.0f32, 8.0, 10.0, 12.0]).unwrap();
+        match result_array {
+            ArrayDResult::Float(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected float array"),
+        }
+    }
+
+    #[test]
+    fn test_op_add_int32_tensors() {
+        // Test adding two int32 tensors
+        let input1_data = vec![1i32, 2, 3, 4];
+        let input1 = create_ort_tensor(
+            input1_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2, 2],
+            DataType::Int32,
+        );
+
+        let input2_data = vec![5i32, 6, 7, 8];
+        let input2 = create_ort_tensor(
+            input2_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![2, 2],
+            DataType::Int32,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input2, input1];
+        let result = OrtEngine::op_add(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected = ArrayD::from_shape_vec(IxDyn(&[2, 2]), vec![6i32, 8, 10, 12]).unwrap();
+        match result_array {
+            ArrayDResult::Int32(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected int32 array"),
+        }
+    }
+
+    #[test]
+    fn test_op_add_int64_tensors() {
+        // Test adding two int64 tensors
+        let input1_data = vec![10i64, 20, 30, 40];
+        let input1 = create_ort_tensor(
+            input1_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![4],
+            DataType::Int64,
+        );
+
+        let input2_data = vec![1i64, 2, 3, 4];
+        let input2 = create_ort_tensor(
+            input2_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+            vec![4],
+            DataType::Int64,
+        );
+
+        let node = NodeProto::default();
+        let inputs = vec![input1, input2];
+        let result = OrtEngine::op_add(&node, &inputs).unwrap();
+        let result_array = ort_to_ndarray(&result).unwrap();
+
+        let expected = ArrayD::from_shape_vec(IxDyn(&[4]), vec![11i64, 22, 33, 44]).unwrap();
+        match result_array {
+            ArrayDResult::Int64(arr) => assert_eq!(arr, expected),
+            _ => panic!("Expected int64 array"),
+        }
+    }
+}
+
+
 mod tests {
 
     use std::collections::HashMap;
@@ -920,27 +1538,6 @@ fn test_simple_add_model_with_external_inputs() {
     }
 }
     
-
-
-    // Helper function to create ArrayDResult from a Vec and shape
-    fn create_float_array(data: Vec<f32>, shape: &[usize]) -> ArrayDResult {
-        ArrayDResult::Float(
-            ArrayD::from_shape_vec(IxDyn(shape), data).expect("Failed to create float array"),
-        )
-    }
-
-    fn create_int64_array(data: Vec<i64>, shape: &[usize]) -> ArrayDResult {
-        ArrayDResult::Int64(
-            ArrayD:: from_shape_vec(IxDyn(shape), data).expect("Failed to create int64 array"),
-        )
-    }
-
-    fn create_int32_array(data: Vec<i32>, shape: &[usize]) -> ArrayDResult {
-        ArrayDResult::Int32(
-            ArrayD::from_shape_vec(IxDyn(shape), data).expect("Failed to create int32 array"),
-        )
-    }
-
     #[test]
     fn test_float_base_float_exponent() {
         let a = create_float_array(vec![2.0, 3.0, 4.0], &[3]); // Array [2.0, 3.0, 4.0]
@@ -1823,18 +2420,7 @@ fn test_simple_add_model_with_external_inputs() {
         }
     }
     
-    // Mock helper functions for testing
-    fn create_ort_tensor(
-        data: Vec<u8>,
-        shape: Vec<usize>,
-        dtype: DataType,
-    ) -> OrtValue {
-        OrtValue::Tensor {
-            shape: shape.into_iter().map(|d| Dimensions::Fixed(d)).collect(),
-            dtype,
-            data: Arc::new(data),
-        }
-    }
+    
     #[test]
     fn test_op_conv_2d_same_padding() {
         let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
@@ -4989,4 +5575,916 @@ fn test_op_resize_asymmetric_nearest_floor() {
 
 
 
+
 }
+
+
+mod complex_ops{
+use crate::{convert::{ndarray_to_ort, ort_to_ndarray, ArrayDResult}, *};
+use ndarray::{ArrayD, IxDyn};
+use std::collections::HashMap;
+use crate::convert::*;
+
+
+#[test]
+fn test_op_lstm_basic_forward() {
+    // Create a simple LSTM test case
+    let seq_length = 3;
+    let batch_size = 2;
+    let input_size = 4;
+    let hidden_size = 3;
+    let num_directions = 1;
+
+    // Create input tensor X [seq_length, batch_size, input_size]
+    let x_data: Vec<f32> = (0..seq_length * batch_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![seq_length, batch_size, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensor W [num_directions, 4*hidden_size, input_size]
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.01)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    // Create recurrence weight tensor R [num_directions, 4*hidden_size, hidden_size]
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.01)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create bias tensor B [num_directions, 8*hidden_size]
+    let b_data: Vec<f32> = vec![0.0; num_directions * 8 * hidden_size];
+    let b = create_ort_tensor(
+        b_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 8 * hidden_size],
+        DataType::Float,
+    );
+
+    // Create node with hidden_size attribute
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "hidden_size".to_string(),
+        i: hidden_size as i64,
+        ..Default::default()
+    }];
+
+    // Execute LSTM operation
+    let inputs = vec![x, w, r, b];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result is a sequence with 3 outputs (Y, Y_h, Y_c)
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+            
+            // Check Y output shape [seq_length, num_directions, batch_size, hidden_size]
+            match &outputs[0] {
+                OrtValue::Tensor { shape, dtype, .. } => {
+                    assert_eq!(*dtype, DataType::Float);
+                    assert_eq!(shape, &vec![
+                        Dimensions::Fixed(seq_length),
+                        Dimensions::Fixed(num_directions),
+                        Dimensions::Fixed(batch_size),
+                        Dimensions::Fixed(hidden_size)
+                    ]);
+                },
+                _ => panic!("Expected tensor output for Y"),
+            }
+
+            // Check Y_h output shape [num_directions, batch_size, hidden_size]
+            match &outputs[1] {
+                OrtValue::Tensor { shape, dtype, .. } => {
+                    assert_eq!(*dtype, DataType::Float);
+                    assert_eq!(shape, &vec![
+                        Dimensions::Fixed(num_directions),
+                        Dimensions::Fixed(batch_size),
+                        Dimensions::Fixed(hidden_size)
+                    ]);
+                },
+                _ => panic!("Expected tensor output for Y_h"),
+            }
+
+            // Check Y_c output shape [num_directions, batch_size, hidden_size]
+            match &outputs[2] {
+                OrtValue::Tensor { shape, dtype, .. } => {
+                    assert_eq!(*dtype, DataType::Float);
+                    assert_eq!(shape, &vec![
+                        Dimensions::Fixed(num_directions),
+                        Dimensions::Fixed(batch_size),
+                        Dimensions::Fixed(hidden_size)
+                    ]);
+                },
+                _ => panic!("Expected tensor output for Y_c"),
+            }
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+
+#[test]
+fn test_op_lstm_bidirectional() {
+    // Test bidirectional LSTM
+    let seq_length = 2;
+    let batch_size = 1;
+    let input_size = 3;
+    let hidden_size = 2;
+    let num_directions = 2;
+
+    // Create input tensor X [seq_length, batch_size, input_size]
+    let x_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![seq_length, batch_size, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensor W [num_directions, 4*hidden_size, input_size]
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    // Create recurrence weight tensor R [num_directions, 4*hidden_size, hidden_size]
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create node with bidirectional direction
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "hidden_size".to_string(),
+            i: hidden_size as i64,
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "direction".to_string(),
+            s: "bidirectional".as_bytes().to_vec(),
+            ..Default::default()
+        }
+    ];
+
+    // Execute LSTM operation
+    let inputs = vec![x, w, r];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+            
+            // Check Y output shape [seq_length, num_directions, batch_size, hidden_size]
+            match &outputs[0] {
+                OrtValue::Tensor { shape, dtype, .. } => {
+                    assert_eq!(*dtype, DataType::Float);
+                    assert_eq!(shape, &vec![
+                        Dimensions::Fixed(seq_length),
+                        Dimensions::Fixed(num_directions),
+                        Dimensions::Fixed(batch_size),
+                        Dimensions::Fixed(hidden_size)
+                    ]);
+                },
+                _ => panic!("Expected tensor output for Y"),
+            }
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+
+#[test]
+fn test_op_lstm_with_initial_states() {
+    // Test LSTM with initial hidden and cell states
+    let seq_length = 2;
+    let batch_size = 1;
+    let input_size = 2;
+    let hidden_size = 2;
+    let num_directions = 1;
+
+    // Create input tensor X
+    let x_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![seq_length, batch_size, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensors
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create empty sequence_lens tensor
+    let sequence_lens = create_ort_tensor(
+        vec![],
+        vec![0],
+        DataType::Int32,
+    );
+
+    // Create initial hidden state
+    let initial_h_data: Vec<f32> = vec![0.5, 0.5, 0.5, 0.5];
+    let initial_h = create_ort_tensor(
+        initial_h_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, batch_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create initial cell state
+    let initial_c_data: Vec<f32> = vec![0.3, 0.3, 0.3, 0.3];
+    let initial_c = create_ort_tensor(
+        initial_c_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, batch_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create node
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "hidden_size".to_string(),
+        i: hidden_size as i64,
+        ..Default::default()
+    }];
+
+    // Execute LSTM operation with initial states
+    let inputs = vec![x, w, r, sequence_lens, initial_h, initial_c];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+            
+            // All outputs should be float tensors with correct shapes
+            for (i, output) in outputs.iter().enumerate() {
+                match output {
+                    OrtValue::Tensor { dtype, .. } => {
+                        assert_eq!(*dtype, DataType::Float);
+                    },
+                    _ => panic!("Expected tensor output at index {}", i),
+                }
+            }
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+
+#[test]
+fn test_op_lstm_with_bias() {
+    // Test LSTM with bias
+    let seq_length = 1;
+    let batch_size = 1;
+    let input_size = 2;
+    let hidden_size = 2;
+    let num_directions = 1;
+
+    // Create input tensor X
+    let x_data: Vec<f32> = vec![1.0, 2.0];
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![seq_length, batch_size, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensors
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create bias tensor B [num_directions, 8*hidden_size]
+    let b_data: Vec<f32> = (0..num_directions * 8 * hidden_size)
+        .map(|i| (i as f32) * 0.01)
+        .collect();
+    let b = create_ort_tensor(
+        b_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 8 * hidden_size],
+        DataType::Float,
+    );
+
+    // Create node
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "hidden_size".to_string(),
+        i: hidden_size as i64,
+        ..Default::default()
+    }];
+
+    // Execute LSTM operation with bias
+    let inputs = vec![x, w, r, b];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+            
+            // Check that all outputs are float tensors
+            for output in outputs.iter() {
+                match output {
+                    OrtValue::Tensor { dtype, .. } => {
+                        assert_eq!(*dtype, DataType::Float);
+                    },
+                    _ => panic!("Expected tensor output"),
+                }
+            }
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+
+#[test]
+fn test_op_lstm_batch_first_layout() {
+    // Test LSTM with batch-first layout
+    let seq_length = 2;
+    let batch_size = 2;
+    let input_size = 3;
+    let hidden_size = 2;
+    let num_directions = 1;
+
+    // Create input tensor X [batch_size, seq_length, input_size] for layout=1
+    let x_data: Vec<f32> = (0..batch_size * seq_length * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![batch_size, seq_length, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensors
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create node with layout=1 (batch first)
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "hidden_size".to_string(),
+            i: hidden_size as i64,
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "layout".to_string(),
+            i: 1,
+            ..Default::default()
+        }
+    ];
+
+    // Execute LSTM operation
+    let inputs = vec![x, w, r];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+            
+            // Check Y output shape [batch_size, seq_length, num_directions, hidden_size] for layout=1
+            match &outputs[0] {
+                OrtValue::Tensor { shape, dtype, .. } => {
+                    assert_eq!(*dtype, DataType::Float);
+                    assert_eq!(shape, &vec![
+                        Dimensions::Fixed(batch_size),
+                        Dimensions::Fixed(seq_length),
+                        Dimensions::Fixed(num_directions),
+                        Dimensions::Fixed(hidden_size)
+                    ]);
+                },
+                _ => panic!("Expected tensor output for Y"),
+            }
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+
+#[test]
+fn test_op_lstm_invalid_inputs() {
+    // Test LSTM with invalid inputs
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "hidden_size".to_string(),
+        i: 2,
+        ..Default::default()
+    }];
+
+    // Test with empty inputs
+    let result = OrtEngine::op_lstm(&node, &[]);
+    assert!(result.is_err());
+
+    // Test with insufficient inputs
+    let x = create_ort_tensor(vec![0u8; 4], vec![1, 1, 1], DataType::Float);
+    let result = OrtEngine::op_lstm(&node, &[x]);
+    assert!(result.is_err());
+
+    // Test with wrong data type
+    let x = create_ort_tensor(vec![0u8; 4], vec![1, 1, 1], DataType::Int32);
+    let w = create_ort_tensor(vec![0u8; 32], vec![1, 8, 1], DataType::Float);
+    let r = create_ort_tensor(vec![0u8; 64], vec![1, 8, 2], DataType::Float);
+    let result = OrtEngine::op_lstm(&node, &[x, w, r]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_op_lstm_missing_hidden_size() {
+    // Test LSTM without hidden_size attribute
+    let node = NodeProto::default(); // No attributes
+
+    let x = create_ort_tensor(vec![0u8; 4], vec![1, 1, 1], DataType::Float);
+    let w = create_ort_tensor(vec![0u8; 32], vec![1, 8, 1], DataType::Float);
+    let r = create_ort_tensor(vec![0u8; 64], vec![1, 8, 2], DataType::Float);
+
+    let result = OrtEngine::op_lstm(&node, &[x, w, r]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_op_lstm_with_activations() {
+    // Test LSTM with custom activation functions
+    let seq_length = 1;
+    let batch_size = 1;
+    let input_size = 2;
+    let hidden_size = 2;
+    let num_directions = 1;
+
+    // Create input tensor X
+    let x_data: Vec<f32> = vec![1.0, 2.0];
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![seq_length, batch_size, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensors
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create node with custom activations
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "hidden_size".to_string(),
+            i: hidden_size as i64,
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "activations".to_string(),
+            strings: vec![
+                "Sigmoid".as_bytes().to_vec(),
+                "Tanh".as_bytes().to_vec(),
+                "Tanh".as_bytes().to_vec(),
+            ],
+            ..Default::default()
+        }
+    ];
+
+    // Execute LSTM operation
+    let inputs = vec![x, w, r];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+
+#[test]
+fn test_op_lstm_with_clip() {
+    // Test LSTM with gradient clipping
+    let seq_length = 1;
+    let batch_size = 1;
+    let input_size = 2;
+    let hidden_size = 2;
+    let num_directions = 1;
+
+    // Create input tensor X
+    let x_data: Vec<f32> = vec![10.0, 20.0]; // Large values to test clipping
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![seq_length, batch_size, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensors
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create node with clipping
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "hidden_size".to_string(),
+            i: hidden_size as i64,
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "clip".to_string(),
+            f: 5.0, // Clip values to [-5, 5]
+            ..Default::default()
+        }
+    ];
+
+    // Execute LSTM operation
+    let inputs = vec![x, w, r];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+            
+            // Check that outputs are finite (clipping should prevent overflow)
+            for output in outputs.iter() {
+                match output {
+                    OrtValue::Tensor { data, .. } => {
+                        let float_data: Vec<f32> = data
+                            .chunks(4)
+                            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                            .collect();
+                        
+                        for &val in &float_data {
+                            assert!(val.is_finite(), "Output contains non-finite value: {}", val);
+                        }
+                    },
+                    _ => panic!("Expected tensor output"),
+                }
+            }
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+
+#[test]
+fn test_op_lstm_input_forget_coupling() {
+    // Test LSTM with input-forget gate coupling
+    let seq_length = 1;
+    let batch_size = 1;
+    let input_size = 2;
+    let hidden_size = 2;
+    let num_directions = 1;
+
+    // Create input tensor X
+    let x_data: Vec<f32> = vec![1.0, 2.0];
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![seq_length, batch_size, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensors
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create node with input-forget coupling
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "hidden_size".to_string(),
+            i: hidden_size as i64,
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "input_forget".to_string(),
+            i: 1, // Enable input-forget coupling
+            ..Default::default()
+        }
+    ];
+
+    // Execute LSTM operation
+    let inputs = vec![x, w, r];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+
+#[test]
+fn test_op_lstm_reverse_direction() {
+    // Test LSTM with reverse direction
+    let seq_length = 3;
+    let batch_size = 1;
+    let input_size = 2;
+    let hidden_size = 2;
+    let num_directions = 1;
+
+    // Create input tensor X
+    let x_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![seq_length, batch_size, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensors
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create node with reverse direction
+    let mut node = NodeProto::default();
+    node.attributes = vec![
+        AttributeProto {
+            name: "hidden_size".to_string(),
+            i: hidden_size as i64,
+            ..Default::default()
+        },
+        AttributeProto {
+            name: "direction".to_string(),
+            s: "reverse".as_bytes().to_vec(),
+            ..Default::default()
+        }
+    ];
+
+    // Execute LSTM operation
+    let inputs = vec![x, w, r];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+            
+            // Check Y output shape [seq_length, num_directions, batch_size, hidden_size]
+            match &outputs[0] {
+                OrtValue::Tensor { shape, dtype, .. } => {
+                    assert_eq!(*dtype, DataType::Float);
+                    assert_eq!(shape, &vec![
+                        Dimensions::Fixed(seq_length),
+                        Dimensions::Fixed(num_directions),
+                        Dimensions::Fixed(batch_size),
+                        Dimensions::Fixed(hidden_size)
+                    ]);
+                },
+                _ => panic!("Expected tensor output for Y"),
+            }
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+#[test]
+fn test_op_lstm_with_peepholes() {
+    // Test LSTM with peephole connections
+    let seq_length = 1;
+    let batch_size = 1;
+    let input_size = 2;
+    let hidden_size = 2;
+    let num_directions = 1;
+
+    // Create input tensor X
+    let x_data: Vec<f32> = vec![1.0, 2.0];
+    let x = create_ort_tensor(
+        x_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![seq_length, batch_size, input_size],
+        DataType::Float,
+    );
+
+    // Create weight tensors
+    let w_data: Vec<f32> = (0..num_directions * 4 * hidden_size * input_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let w = create_ort_tensor(
+        w_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, input_size],
+        DataType::Float,
+    );
+
+    let r_data: Vec<f32> = (0..num_directions * 4 * hidden_size * hidden_size)
+        .map(|i| (i as f32) * 0.1)
+        .collect();
+    let r = create_ort_tensor(
+        r_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 4 * hidden_size, hidden_size],
+        DataType::Float,
+    );
+
+    // Create bias tensor
+    let b_data: Vec<f32> = vec![0.0; num_directions * 8 * hidden_size];
+    let b = create_ort_tensor(
+        b_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 8 * hidden_size],
+        DataType::Float,
+    );
+
+    // Create empty sequence_lens tensor
+    let sequence_lens = create_ort_tensor(
+        vec![],
+        vec![0],
+        DataType::Int32,
+    );
+
+    // Create empty initial states
+    let initial_h = create_ort_tensor(
+        vec![],
+        vec![0],
+        DataType::Float,
+    );
+
+    let initial_c = create_ort_tensor(
+        vec![],
+        vec![0],
+        DataType::Float,
+    );
+
+    // Create peephole weights P [num_directions, 3*hidden_size]
+    let p_data: Vec<f32> = (0..num_directions * 3 * hidden_size)
+        .map(|i| (i as f32) * 0.01)
+        .collect();
+    let p = create_ort_tensor(
+        p_data.iter().flat_map(|x| x.to_le_bytes().to_vec()).collect(),
+        vec![num_directions, 3 * hidden_size],
+        DataType::Float,
+    );
+
+    // Create node
+    let mut node = NodeProto::default();
+    node.attributes = vec![AttributeProto {
+        name: "hidden_size".to_string(),
+        i: hidden_size as i64,
+        ..Default::default()
+    }];
+
+    // Execute LSTM operation with peepholes
+    let inputs = vec![x, w, r, b, sequence_lens, initial_h, initial_c, p];
+    let result = OrtEngine::op_lstm(&node, &inputs).unwrap();
+
+    // Verify result
+    match result {
+        OrtValue::Sequence(outputs) => {
+            assert_eq!(outputs.len(), 3);
+            
+            // Check that all outputs are float tensors with correct shapes
+            match &outputs[0] {
+                OrtValue::Tensor { shape, dtype, .. } => {
+                    assert_eq!(*dtype, DataType::Float);
+                    assert_eq!(shape, &vec![
+                        Dimensions::Fixed(seq_length),
+                        Dimensions::Fixed(num_directions),
+                        Dimensions::Fixed(batch_size),
+                        Dimensions::Fixed(hidden_size)
+                    ]);
+                },
+                _ => panic!("Expected tensor output for Y"),
+            }
+            
+            match &outputs[1] {
+                OrtValue::Tensor { shape, dtype, .. } => {
+                    assert_eq!(*dtype, DataType::Float);
+                    assert_eq!(shape, &vec![
+                        Dimensions::Fixed(num_directions),
+                        Dimensions::Fixed(batch_size),
+                        Dimensions::Fixed(hidden_size)
+                    ]);
+                },
+                _ => panic!("Expected tensor output for Y_h"),
+            }
+    
+            match &outputs[2] {
+                OrtValue::Tensor { shape, dtype, .. } => {
+                    assert_eq!(*dtype, DataType::Float);
+                    assert_eq!(shape, &vec![
+                        Dimensions::Fixed(num_directions),
+                        Dimensions::Fixed(batch_size),
+                        Dimensions::Fixed(hidden_size)
+                    ]);
+                },
+                _ => panic!("Expected tensor output for Y_c"),
+            }
+        },
+        _ => panic!("Expected sequence output from LSTM"),
+    }
+}
+}
+
+
+
+
+

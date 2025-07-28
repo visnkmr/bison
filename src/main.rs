@@ -165,8 +165,20 @@ fn get_sample_values(data: &Arc<Vec<u8>>, dtype: &DataType,fulloutput:bool) -> S
         DataType::Int32 => {
             let int_data: Vec<i32> = data
                 .chunks(4)
+                .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            let samples: Vec<String> = int_data.iter()
+                        .take(3)
+                        .map(|x| x.to_string())
+                        .collect();
             format!("[{}]", samples.join(" "))
         }
+        DataType::Boolean=>{
+        let samples: Vec<String> = data.iter()
+            .take(3)
+            .map(|&x| if x != 0 { "true" } else { "false" }.to_string())
+            .collect();
+        format!("[{}]", samples.join(" "))
             
         }
         _ => {

@@ -5,6 +5,7 @@ use ndarray::ArrayD;
 use rayon::prelude::*;
 use std::arch::x86_64::*;
 use crate::{convert::{ndarray_to_ort, ort_to_ndarray, ArrayDResult}, *};
+use crate::simd_kernels::{gemm_f32_bytes, bytes_len_for_f32_elems, softmax_last_axis_f32, layernorm_last_axis_f32};
 
 impl OrtEngine {
     /// Optimized 2D Convolution with all performance improvements

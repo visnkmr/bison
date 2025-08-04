@@ -1,10 +1,10 @@
 // #![recursion_limit = "5684"]
-#![feature(try_trait_v2)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 mod core_ops;
 // mod core_ops2;
 pub use core_ops::*;
 mod optimized_ops;
+mod simd_kernels;
 pub use optimized_ops::*;
 mod lstm_optimized;
 pub use lstm_optimized::*;
@@ -2707,4 +2707,3 @@ let mut npz = NpzReader::new(File::open("./voices-v1.0.bin").unwrap()).unwrap();
 //     Ok(())
 // } 
    // Sequence Operators Implementation
-   
